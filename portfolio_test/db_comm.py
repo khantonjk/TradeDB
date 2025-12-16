@@ -1,19 +1,22 @@
-# python
 import sqlite3
-from datetime import datetime
-from typing import List, Dict, Union
+import pandas as pd
+from datetime import datetime, timedelta
+from typing import List, Dict, Union, Optional
+
+# Import your existing motor class
+# Assuming motor.py is in the same directory
+from motor import CalculationMotor
 
 DATABASE_NAME = 'trades.db'
 
 
 class PortfolioDBManager:
     """
-    Manages all database connections and operations for the portfolio tracker.
-    Handles inserting transactions into the Trades log and managing the
-    Current_Positions snapshot table.
+    Manages database connections, records trades, automatically handles cash
+    adjustments, and integrates with CalculationMotor for historical pricing.
     """
 
-    def __init__(self, db_name: str):
+    def __init__(self, db_name: str = DATABASE_NAME):
         self.db_name = db_name
         self.conn = self._connect_db()
 
@@ -21,45 +24,51 @@ class PortfolioDBManager:
         """Establishes and returns a database connection."""
         try:
             conn = sqlite3.connect(self.db_name)
-            # Use Row factory to access columns by name instead of index
             conn.row_factory = sqlite3.Row
-            # Enable foreign key enforcement
             conn.execute("PRAGMA foreign_keys = ON;")
             return conn
         except sqlite3.Error as e:
             print(f"Database connection error: {e}")
             raise
 
-    def _update_current_positions(self, ticker: str, tx_type: str, shares: float, actual_price: float,
-                                  tx_datetime: str):
+    def close(self):
+        """Closes the database connection."""
+        if self.conn:
+            self.conn.close()
+            print("Database connection closed.")
+
+    # ---------------------------------------------------------
+    # Core Database Updates
+    # ---------------------------------------------------------
+
+    def _upsert_position(self, ticker: str, share_change: float, price: float, tx_datetime: str):
         """
-        Internal method to manage the Current_Positions snapshot table (the Python-managed "trigger").
+        Updates the Current_Positions table for a specific ticker.
+        Handles both Stock and CASH updates.
         """
         cursor = self.conn.cursor()
 
-        # 1. Determine the share change (the inverse of the operation)
-        share_change = shares if tx_type in ('BUY', 'DEPOSIT') else -shares
-
-        # 2. Get existing state to calculate new state
+        # 1. Get existing state
         cursor.execute("SELECT net_shares, last_trade_price FROM Current_Positions WHERE ticker = ?", (ticker,))
-        current_pos = cursor.fetchone()
+        row = cursor.fetchone()
 
-        # Set initial values for calculation if the position doesn't exist
-        current_net_shares = current_pos['net_shares'] if current_pos else 0.0
+        current_shares = row['net_shares'] if row else 0.0
+        # For CASH, the "price" is always 1.0. For stocks, use last known or new price.
+        if ticker == 'CASH':
+            last_price = 1.0
+        else:
+            last_price = row['last_trade_price'] if row else price
 
-        # Use the existing price or the new price if it's a stock
-        current_last_price = current_pos['last_trade_price'] if current_pos else 0.0
+        # 2. Calculate New State
+        new_shares = current_shares + share_change
 
-        # Calculate NEW state
-        new_net_shares = current_net_shares + share_change
+        # If it's a stock trade, update the last_trade_price to the new transaction price
+        # If it's a CASH update, price remains 1.0
+        new_price = price if ticker != 'CASH' else 1.0
 
-        # Only update price if it's a stock trade
-        new_last_price = actual_price if ticker != 'CASH' else current_last_price
+        new_total_value = new_shares * new_price
 
-        # Total value is the new quantity times the new/current last price
-        new_total_value = new_net_shares * new_last_price
-
-        # 3. Insert or Update the Current_Positions table (UPSERT)
+        # 3. UPSERT (Insert or Update)
         cursor.execute("""
                        INSERT INTO Current_Positions (ticker, net_shares, last_trade_price, total_position_value,
                                                       last_updated)
@@ -70,56 +79,125 @@ class PortfolioDBManager:
                            total_position_value = ?,
                            last_updated = ?
                        """, (
-                           ticker, new_net_shares, new_last_price, new_total_value, tx_datetime,  # Insert values
-                           new_net_shares, new_last_price, new_total_value, tx_datetime  # Update values
+                           ticker, new_shares, new_price, new_total_value, tx_datetime,
+                           new_shares, new_price, new_total_value, tx_datetime
                        ))
 
-    def record_transaction(self, tx_type: str, ticker: str, shares: float, actual_price: float,
-                           valued_price: float = None, currency: str = 'SEK'):
+    def record_transaction(self,
+                           tx_type: str,
+                           ticker: str,
+                           shares: float,
+                           actual_price: float,
+                           tx_datetime: str = None,
+                           currency: str = 'SEK'):
         """
-        Inserts a new transaction into the Trades log and updates the Current_Positions snapshot.
+        Records a trade and automatically updates the CASH balance.
+
+        Args:
+            tx_type: 'BUY', 'SELL', 'DEPOSIT', 'WITHDRAW'
+            ticker: Stock symbol (e.g. 'AAPL') or 'CASH' for deposits
+            shares: Number of shares (float allowed)
+            actual_price: Price per share
+            tx_datetime: Optional 'YYYY-MM-DD HH:MM:SS' string. Defaults to now.
         """
-        tx_datetime = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        if tx_type:
+            tx_type = tx_type.upper()
+            if tx_type in ('BUY', 'SELL', 'DEPOSIT', 'WITHDRAW'):
+                pass
+        else:
+            raise ValueError("Transaction type must be provided and be one of 'BUY', 'SELL', 'DEPOSIT', 'WITHDRAW'.")
+        if ticker == "CASH" and tx_type not in ('DEPOSIT', 'WITHDRAW'):
+            raise ValueError("For 'CASH' ticker, transaction type must be 'DEPOSIT' or 'WITHDRAW'.")
+        elif ticker == "CASH" and tx_type in ('DEPOSIT', 'WITHDRAW'):
+            # For CASH deposits/withdrawals, shares represent the amount directly
+            shares = shares  # amount in currency units
+            actual_price = 1.0  # Price per share is always 1 for CASH
+
+        if tx_datetime is None:
+            tx_datetime = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
         total_amount = round(shares * actual_price, 4)
-
         cursor = self.conn.cursor()
 
-        # 1. Insert into Trades (Log)
-        cursor.execute("""
-                       INSERT INTO Trades (transaction_datetime, transaction_type, ticker, shares, actual_price,
-                                           valued_price, currency, amount)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                       """, (
-                           tx_datetime, tx_type, ticker, shares, actual_price, valued_price, currency, total_amount
-                       ))
+        try:
 
-        # 2. Update Current_Positions (Snapshot)
-        self._update_current_positions(ticker, tx_type, shares, actual_price, tx_datetime)
+            # fail transaction if missing liquidity for BUY or WITHDRAW
+            if tx_type == 'BUY' or tx_type == 'WITHDRAW':
+                # get current cash balance
+                cursor.execute("SELECT net_shares FROM Current_Positions WHERE ticker = 'CASH'")
+                row = cursor.fetchone()
+                current_cash = row['net_shares'] if row else 0.0
+                if current_cash < total_amount:
+                    print(f"❌ Insufficient cash balance to {tx_type} {total_amount} of {ticker}. "
+                          f"Current CASH: {current_cash}")
+                    return "Transaction Denied: Insufficient Cash"
 
-        self.conn.commit()
-        print(f"✅ Recorded {tx_type} of {shares} {ticker} and updated snapshot.")
+            # --- 1. Log the Trade ---
+            cursor.execute("""
+                           INSERT INTO Trades (transaction_datetime, transaction_type, ticker, shares, actual_price,
+                                               currency, amount)
+                           VALUES (?, ?, ?, ?, ?, ?, ?)
+                           """, (tx_datetime, tx_type, ticker, shares, actual_price, currency, total_amount))
 
-    def get_portfolio_snapshot(self) -> List[Dict[str, Union[str, float]]]:
+            # --- 2. Update Stock Position ---
+            # Determine direction for the stock (BUY adds shares, SELL removes shares)
+            stock_change = shares if tx_type in ('BUY', 'DEPOSIT') else -shares
+            self._upsert_position(ticker, stock_change, actual_price, tx_datetime)
+
+            # --- 3. Update CASH Balance (The "Motor" Logic) ---
+            # If we bought stock, Cash goes DOWN. If we sold stock, Cash goes UP.
+            # Deposits increase cash, Withdrawals decrease cash.
+
+            if ticker != 'CASH':
+                cash_change = 0.0
+                if tx_type == 'BUY':
+                    cash_change = -total_amount  # Spend money
+                elif tx_type == 'SELL':
+                    cash_change = total_amount  # Receive money
+
+                if cash_change != 0.0:
+                    self._upsert_position('CASH', cash_change, 1.0, tx_datetime)
+                    print(f"   -> Cash balance adjusted by {cash_change}")
+
+            self.conn.commit()
+            print(f"✅ Recorded {tx_type}: {shares} {ticker} @ {actual_price}. Snapshot updated.")
+
+        except sqlite3.Error as e:
+            self.conn.rollback()
+            print(f"❌ Transaction failed: {e}")
+
+
+    # helper function to deposit cash
+    def deposit_cash(self, amount: float, tx_datetime: str = None):
         """
-        Retrieves all current positions (stocks and cash) and their calculated values
-        from the fast Current_Positions table.
+        Deposits cash into the portfolio.
+
+        Args:
+            amount: Amount to deposit
+            tx_datetime: Optional 'YYYY-MM-DD HH:MM:SS' string. Defaults to now.
         """
+        self.record_transaction(
+            tx_type='DEPOSIT',
+            ticker='CASH',
+            shares=amount,
+            actual_price=1.0,
+            tx_datetime=tx_datetime
+        )
+
+
+
+
+    # ---------------------------------------------------------
+    # Reporting
+    # ---------------------------------------------------------
+
+    def get_portfolio_snapshot(self) -> pd.DataFrame:
         cursor = self.conn.cursor()
         cursor.execute("""
-                       SELECT ticker,
-                              net_shares,
-                              last_trade_price,
-                              total_position_value
+                       SELECT ticker, net_shares, last_trade_price, total_position_value
                        FROM Current_Positions
                        WHERE net_shares != 0
                        ORDER BY total_position_value DESC
                        """)
-
-        # Convert sqlite3.Row objects to standard dictionaries for easy use
-        return [dict(row) for row in cursor.fetchall()]
-
-    def close(self):
-        """Closes the database connection."""
-        if self.conn:
-            self.conn.close()
-            print("Database connection closed.")
+        positions_rows = [dict(row) for row in cursor.fetchall()]
+        return pd.DataFrame(positions_rows)

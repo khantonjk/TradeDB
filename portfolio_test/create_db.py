@@ -43,7 +43,6 @@ def create_and_initialize_database():
                            ticker               TEXT     NOT NULL,
                            shares               REAL     NOT NULL,
                            actual_price         REAL     NOT NULL,
-                           valued_price         REAL,
                            currency             TEXT,
                            amount               REAL     NOT NULL
                        )
