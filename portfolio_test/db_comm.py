@@ -2,7 +2,7 @@ import sqlite3
 import pandas as pd
 from datetime import datetime, timedelta
 from typing import List, Dict, Union, Optional
-
+from FX_CONSTANTS import currency_conversion_rates
 # Import your existing motor class
 # Assuming motor.py is in the same directory
 from motor import CalculationMotor
@@ -106,12 +106,24 @@ class PortfolioDBManager:
                 pass
         else:
             raise ValueError("Transaction type must be provided and be one of 'BUY', 'SELL', 'DEPOSIT', 'WITHDRAW'.")
+
         if ticker == "CASH" and tx_type not in ('DEPOSIT', 'WITHDRAW'):
             raise ValueError("For 'CASH' ticker, transaction type must be 'DEPOSIT' or 'WITHDRAW'.")
         elif ticker == "CASH" and tx_type in ('DEPOSIT', 'WITHDRAW'):
             # For CASH deposits/withdrawals, shares represent the amount directly
             shares = shares  # amount in currency units
             actual_price = 1.0  # Price per share is always 1 for CASH
+
+        if currency is not None:
+            currency = currency.upper()
+            if currency not in currency_conversion_rates.keys():
+                raise ValueError(f"{currency} not supported yet for conversion.")
+            else:
+                # Convert actual_price to SEK if needed
+                if currency != 'SEK':
+                    conversion_rate = currency_conversion_rates[currency]
+                    actual_price = round(actual_price * conversion_rate, 4)
+                    currency = 'SEK'  # After conversion, we store as SEK
 
         if tx_datetime is None:
             tx_datetime = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
