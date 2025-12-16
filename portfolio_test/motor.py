@@ -16,7 +16,7 @@ class CalculationMotor(yf.Ticker):
         self.df = self.history(start=self.start, end=self.end, auto_adjust=False)
         self.df.index = self.df.index.normalize().tz_localize(None)
         self.df["Price_SEK"] = self._convert_to_sek(self.df["Open"], self.history_metadata['currency'])
-        # TODO: Solve problems with splits
+
     def _convert_to_sek(self, price: pd.Series, currency: str) -> pd.Series:
         currency = currency.upper()
         if currency not in currency_conversion_rates.keys():
