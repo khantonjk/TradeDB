@@ -3,6 +3,8 @@ import pandas as pd
 import numpy as np
 import warnings
 
+from portfolio_test.FX_CONSTANTS import currency_conversion_rates
+
 
 class CalculationMotor(yf.Ticker):
     def __init__(self, ticker: str, start: str = None, end: str = None):
@@ -13,7 +15,15 @@ class CalculationMotor(yf.Ticker):
         # fetch price history once
         self.df = self.history(start=self.start, end=self.end, auto_adjust=False)
         self.df.index = self.df.index.normalize().tz_localize(None)
+        self.df["Price_SEK"] = self._convert_to_sek(self.df["Open"], self.history_metadata['currency'])
 
+    def _convert_to_sek(self, price: pd.Series, currency: str) -> pd.Series:
+        currency = currency.upper()
+        if currency not in currency_conversion_rates.keys():
+            raise ValueError(f"{currency} not supported yet for conversion.")
+
+        conversion_rate = currency_conversion_rates[currency]
+        return price * conversion_rate
 
     def _start_date(self, start) -> str:
         """Internal method to determine start date."""
@@ -26,6 +36,3 @@ class CalculationMotor(yf.Ticker):
         if end is not None:
             return end
         return pd.Timestamp.today().strftime('%Y-%m-%d')
-
-
-

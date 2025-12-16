@@ -157,13 +157,26 @@ class PortfolioDBManager:
             # fail transaction if missing liquidity for BUY or WITHDRAW
             if tx_type == 'BUY' or tx_type == 'WITHDRAW':
                 # get current cash balance
-                cursor.execute("SELECT net_shares FROM Current_Positions WHERE ticker = 'CASH'")
-                row = cursor.fetchone()
-                current_cash = row['net_shares'] if row else 0.0
+
+                current_cash = self.get_cash_balance()
                 if current_cash < total_amount:
                     print(f"❌ Insufficient cash balance to {tx_type} {total_amount} of {ticker}. "
                           f"Current CASH: {current_cash}")
                     return "Transaction Denied: Insufficient Cash"
+
+            if tx_type == 'SELL':
+                # get current stock position
+                cursor.execute("""
+                               SELECT net_shares
+                               FROM Current_Positions
+                               WHERE ticker = ?
+                               """, (ticker,))
+                row = cursor.fetchone()
+                current_stock = row['net_shares'] if row else 0.0
+                if current_stock < shares:
+                    print(f"❌ Insufficient shares to SELL {shares} of {ticker}. "
+                          f"Current Shares: {current_stock}")
+                    return "Transaction Denied: Insufficient Shares"
 
             # --- 1. Log the Trade ---
             cursor.execute("""
@@ -219,6 +232,18 @@ class PortfolioDBManager:
     # ---------------------------------------------------------
     # Reporting
     # ---------------------------------------------------------
+
+
+
+    def get_cash_balance(self) -> float:
+        cursor = self.conn.cursor()
+        cursor.execute("""
+                       SELECT net_shares
+                       FROM Current_Positions
+                       WHERE ticker = 'CASH'
+                       """)
+        row = cursor.fetchone()
+        return row['net_shares'] if row else 0.0
 
     def get_portfolio_snapshot(self) -> pd.DataFrame:
         cursor = self.conn.cursor()
