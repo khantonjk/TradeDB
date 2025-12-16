@@ -83,6 +83,36 @@ class PortfolioDBManager:
                            new_shares, new_price, new_total_value, tx_datetime
                        ))
 
+    def _normalize_datetime(self, datetime_input: Union[str, datetime, pd.Timestamp, None]) -> str:
+        """
+        Helper to ensure transaction dates are always strings in 'YYYY-MM-DD HH:MM:SS' format.
+        Handles None (defaults to now), strings, and pandas Timestamps.
+        """
+        if datetime_input is None:
+            dt_obj = datetime.now()
+        else:
+            # pd.to_datetime is robust: handles '2023-01-01', timestamps, etc.
+            dt_obj = pd.to_datetime(datetime_input)
+
+        # Force the specific string format (strips T, adds 00:00:00 if missing)
+        return dt_obj.strftime('%Y-%m-%d %H:%M:%S')
+
+    def _convert_price_and_currency_to_sek(self, actual_price, currency: Optional[str]) -> tuple[float, str]:
+        """
+        Converts the actual_price to SEK based on the provided currency.
+        """
+
+        currency = currency.upper()
+        if currency not in currency_conversion_rates.keys():
+            raise ValueError(f"{currency} not supported yet for conversion.")
+
+        # Convert actual_price to SEK if needed
+        if currency != 'SEK':
+            conversion_rate = currency_conversion_rates[currency]
+            actual_price = round(actual_price * conversion_rate, 4)
+            currency = 'SEK'  # After conversion, we store as SEK
+        return actual_price, currency
+
     def record_transaction(self,
                            tx_type: str,
                            ticker: str,
@@ -98,7 +128,8 @@ class PortfolioDBManager:
             ticker: Stock symbol (e.g. 'AAPL') or 'CASH' for deposits
             shares: Number of shares (float allowed)
             actual_price: Price per share
-            tx_datetime: Optional 'YYYY-MM-DD HH:MM:SS' string. Defaults to now.
+            tx_datetime: date
+            currency: Currency of the actual_price (default 'SEK')
         """
         if tx_type:
             tx_type = tx_type.upper()
@@ -114,19 +145,9 @@ class PortfolioDBManager:
             shares = shares  # amount in currency units
             actual_price = 1.0  # Price per share is always 1 for CASH
 
-        if currency is not None:
-            currency = currency.upper()
-            if currency not in currency_conversion_rates.keys():
-                raise ValueError(f"{currency} not supported yet for conversion.")
-            else:
-                # Convert actual_price to SEK if needed
-                if currency != 'SEK':
-                    conversion_rate = currency_conversion_rates[currency]
-                    actual_price = round(actual_price * conversion_rate, 4)
-                    currency = 'SEK'  # After conversion, we store as SEK
+        actual_price, currency = self._convert_price_and_currency_to_sek(actual_price, currency)
 
-        if tx_datetime is None:
-            tx_datetime = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        tx_datetime = self._normalize_datetime(tx_datetime)
 
         total_amount = round(shares * actual_price, 4)
         cursor = self.conn.cursor()
@@ -178,7 +199,6 @@ class PortfolioDBManager:
             self.conn.rollback()
             print(f"❌ Transaction failed: {e}")
 
-
     # helper function to deposit cash
     def deposit_cash(self, amount: float, tx_datetime: str = None):
         """
@@ -195,9 +215,6 @@ class PortfolioDBManager:
             actual_price=1.0,
             tx_datetime=tx_datetime
         )
-
-
-
 
     # ---------------------------------------------------------
     # Reporting

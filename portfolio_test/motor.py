@@ -12,6 +12,7 @@ class CalculationMotor(yf.Ticker):
         self.end = self._end_date(end)
         # fetch price history once
         self.df = self.history(start=self.start, end=self.end, auto_adjust=False)
+        self.df.index = self.df.index.normalize().tz_localize(None)
 
 
     def _start_date(self, start) -> str:
