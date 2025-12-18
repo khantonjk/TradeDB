@@ -118,7 +118,7 @@ class PortfolioDBManager:
                            ticker: str,
                            shares: float,
                            actual_price: float,
-                           tx_datetime: str = None,
+                           tx_datetime: Union[str, datetime, pd.Timestamp, None],
                            currency: str = 'SEK'):
         """
         Records a trade and automatically updates the CASH balance.
