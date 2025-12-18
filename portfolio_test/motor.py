@@ -17,6 +17,8 @@ class CalculationMotor(yf.Ticker):
         self.df["Close"] = self._convert_to_sek(self.df["Close"], self.history_metadata['currency'])
         self.df["High"] = self._convert_to_sek(self.df["High"], self.history_metadata['currency'])
         self.df["Low"] = self._convert_to_sek(self.df["Low"], self.history_metadata['currency'])
+        self.df["Adj Close"] = self._convert_to_sek(self.df["Adj Close"], self.history_metadata['currency'])
+
 
     def _convert_to_sek(self, price: pd.Series, currency: str) -> pd.Series:
         currency = currency.upper()
@@ -37,3 +39,4 @@ class CalculationMotor(yf.Ticker):
         if end is not None:
             return end
         return pd.Timestamp.today().strftime('%Y-%m-%d')
+
