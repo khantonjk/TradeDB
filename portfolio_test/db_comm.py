@@ -206,7 +206,7 @@ class PortfolioDBManager:
                     print(f"   -> Cash balance adjusted by {cash_change}")
 
             self.conn.commit()
-            print(f"✅ Recorded {tx_type}: {shares} {ticker} @ {actual_price}. Snapshot updated.")
+            print(f"{tx_datetime}: ✅ Recorded {tx_type}: {ticker} @ {total_amount}. Snapshot updated.")
 
         except sqlite3.Error as e:
             self.conn.rollback()
@@ -228,6 +228,38 @@ class PortfolioDBManager:
             actual_price=1.0,
             tx_datetime=tx_datetime
         )
+    # helper to sell everything in portfolio
+    def sell_all_assets(self, tx_datetime: str = None):
+        """
+        Sells all non-cash assets in the portfolio.
+        """
+        cursor = self.conn.cursor()
+        cursor.execute("""
+                       SELECT ticker, net_shares
+                       FROM Current_Positions
+                       WHERE ticker != 'CASH' AND net_shares > 0
+                       """)
+        rows = cursor.fetchall()
+        for row in rows:
+            ticker = row['ticker']
+            shares = row['net_shares']
+            # Fetch last trade price for the ticker
+            cursor.execute("""
+                           SELECT last_trade_price
+                           FROM Current_Positions
+                           WHERE ticker = ?
+                           """, (ticker,))
+            price_row = cursor.fetchone()
+            last_price = price_row['last_trade_price'] if price_row else 0.0
+
+            self.record_transaction(
+                tx_type='SELL',
+                ticker=ticker,
+                shares=shares,
+                actual_price=last_price,
+                tx_datetime=tx_datetime
+            )
+
 
     # ---------------------------------------------------------
     # Reporting

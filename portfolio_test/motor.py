@@ -1,7 +1,5 @@
-import yfinance as yf
 import pandas as pd
-import numpy as np
-import warnings
+import yfinance as yf
 
 from portfolio_test.FX_CONSTANTS import currency_conversion_rates
 
@@ -15,7 +13,10 @@ class CalculationMotor(yf.Ticker):
         # fetch price history once
         self.df = self.history(start=self.start, end=self.end, auto_adjust=False)
         self.df.index = self.df.index.normalize().tz_localize(None)
-        self.df["Price_SEK"] = self._convert_to_sek(self.df["Open"], self.history_metadata['currency'])
+        self.df["Open"] = self._convert_to_sek(self.df["Open"], self.history_metadata['currency'])
+        self.df["Close"] = self._convert_to_sek(self.df["Close"], self.history_metadata['currency'])
+        self.df["High"] = self._convert_to_sek(self.df["High"], self.history_metadata['currency'])
+        self.df["Low"] = self._convert_to_sek(self.df["Low"], self.history_metadata['currency'])
 
     def _convert_to_sek(self, price: pd.Series, currency: str) -> pd.Series:
         currency = currency.upper()
