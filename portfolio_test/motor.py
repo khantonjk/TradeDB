@@ -10,7 +10,7 @@ class CalculationMotor(yf.Ticker):
         super().__init__(ticker)
         self.start = self._start_date(start)
         self.end = self._end_date(end)
-        # fetch price history once
+        # fetch price history, date ascending as default
         self.df = self.history(start=self.start, end=self.end, auto_adjust=False)
         self.df.index = self.df.index.normalize().tz_localize(None)
         self.df["Open"] = self._convert_to_sek(self.df["Open"], self.history_metadata['currency'])
