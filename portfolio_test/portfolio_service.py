@@ -1,4 +1,6 @@
 import pandas as pd
+
+
 #
 # Need to code this.
 # a service to measure the performance of the portfolio
@@ -11,7 +13,25 @@ class PortfolioService:
         type in parentheses for example "Close (AAPL)", "Close (MSFT)", "PE (AAPL)", etc.
         """
         self.pm = portfolio_manager
-        self.df = data_forge_df
+        self.df = self._validate_data_forge(data_forge_df)
+
+    def _validate_data_forge(self, df):
+        if not isinstance(df, pd.DataFrame):
+            raise TypeError("data_forge_df must be a pandas.DataFrame or an object with .market_data")
+
+        if df.empty:
+            raise ValueError("data_forge_df is empty")
+
+        # Confirm index is date
+        if not isinstance(df.index, pd.DatetimeIndex):
+            try:
+                df.index = pd.to_datetime(df.index, errors='raise')
+                df.index = pd.DatetimeIndex(df.index).normalize()
+                df = df.sort_index(ascending=True)
+            except Exception as exc:
+                raise TypeError("data_forge_df must have a DateTime index (could not parse index)",
+                                type(df.index)) from exc
+        return df
 
     def get_total_valuation(self) -> float:
         """
@@ -22,28 +42,6 @@ class PortfolioService:
         - warns and treats missing tickers as 0
         """
         df = self.df.copy()
-
-        if not isinstance(df, pd.DataFrame):
-            raise TypeError("data_forge_df must be a pandas.DataFrame or an object with .market_data")
-
-        if df.empty:
-            # No market prices -> return cash only
-            raise ValueError("data_forge_df is empty")
-
-        # Confirm index is date. Be permissive: if the index is not a DatetimeIndex but
-        # contains parseable date-like values (strings, python dates), coerce it. If coercion
-        # fails, raise a clear TypeError.
-        if not isinstance(df.index, pd.DatetimeIndex):
-            try:
-                # This will raise if some values are not parseable
-                df.index = pd.to_datetime(df.index, errors='raise')
-                # Normalize times to midnight for consistent behaviour
-                df.index = pd.DatetimeIndex(df.index).normalize()
-            except Exception as exc:
-                # Preserve the original type in the error message for debugging
-                raise TypeError("data_forge_df must have a DateTime index (could not parse index)", type(df.index)) from exc
-
-        df = df.sort_index(ascending=True)
 
         latest_date_row = df.iloc[-1]
 
@@ -76,17 +74,17 @@ class PortfolioService:
             raise KeyError("portfolio snapshot must contain a 'last_trade_price' column")
 
         for t in portfolio_df['ticker'].unique():
-            #if t == 'CASH': # skip cash entry
+            # if t == 'CASH': # skip cash entry
             #    continue
             col = _find_price_column_for_ticker(t)
-            if col is None: # no price column found in market data
+            if col is None:  # no price column found in market data
                 price_map[t] = portfolio_df[portfolio_df['ticker'] == t]['last_trade_price'].iloc[0]
             else:
                 # use .get to avoid KeyError if column missing in latest_date_row
                 latest_price = latest_date_row.get(col, None)
-                if pd.isna(latest_price): # missing price data for this ticker but column exists
+                if pd.isna(latest_price):  # missing price data for this ticker but column exists
                     price_map[t] = portfolio_df[portfolio_df['ticker'] == t]['last_trade_price'].iloc[0]
-                else: # valid price found
+                else:  # valid price found
                     print(f"Latest price for {t} from column {col} is {round(latest_price, 2)}")
                     price_map[t] = latest_price
 
@@ -96,6 +94,31 @@ class PortfolioService:
 
         # Calculate total value: sum(shares * price) + cash
         shares_value_and_cash_value = (portfolio_df['net_shares'] * portfolio_df['current_price']).sum()
-        #cash_value = self.pm.get_cash_balance()
-        #return #float(shares_value + cash_value)
+        # cash_value = self.pm.get_cash_balance()
+        # return #float(shares_value + cash_value)
         return shares_value_and_cash_value
+
+    def get_sharpe_ratio(self, column_name: str, risk_free_rate: float = 0.02) -> float:
+        """
+        Calculate the Sharpe Ratio of the portfolio based on daily returns.
+        :param risk_free_rate: Annual risk-free rate (default is 2%)
+        :return: Sharpe Ratio
+        """
+        df = self.df.copy()
+
+        # Calculate daily returns
+        daily_returns = df[column_name].pct_change().dropna()
+
+        # Calculate average daily return and standard deviation of daily returns
+        avg_daily_return = daily_returns.mean()
+        std_daily_return = daily_returns.std() # = variance**0.5
+
+        # Annualize the average return and standard deviation
+        trading_days_per_year = 252
+        annualized_return = avg_daily_return * trading_days_per_year
+        annualized_std = std_daily_return * (trading_days_per_year ** 0.5)
+
+        # Calculate Sharpe Ratio
+        sharpe_ratio = (annualized_return - risk_free_rate) / annualized_std
+
+        return sharpe_ratio.mean()  # Return the mean Sharpe Ratio across all assets
