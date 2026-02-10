@@ -2,7 +2,7 @@ import pandas as pd
 
 class DataForge:
     def __init__(self):
-        self.forge_df = pd.DataFrame()
+        self.forge_df = pd.DataFrame(index=pd.to_datetime(pd.Index([])).normalize())
 
     def add_column_of_data(self, series: pd.Series, column_name: str):
         """
