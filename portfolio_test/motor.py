@@ -40,3 +40,4 @@ class CalculationMotor(yf.Ticker):
             return end
         return pd.Timestamp.today().strftime('%Y-%m-%d')
 
+    # unpacking function to get PE ratio at dates and other measeruments

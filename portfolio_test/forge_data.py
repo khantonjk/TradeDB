@@ -4,7 +4,7 @@ class DataForge:
     def __init__(self):
         self.forge_df = pd.DataFrame()
 
-    def insert_data(self, series: pd.Series, column_name: str):
+    def add_column_of_data(self, series: pd.Series, column_name: str):
         """
         Insert data into the Dataframe
         Index is always Date
