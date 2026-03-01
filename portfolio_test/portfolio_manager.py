@@ -146,6 +146,10 @@ class PortfolioManager:
         else:
             raise ValueError("Invalid transaction type or percentage (not over 100%). Must be 'BUY' or 'SELL' with positive percentage.")
         # calculate shares to buy
+        if amount == 0:
+            print(f"⚠️  Calculated amount is 0 for {tx_type} {ticker} at {pcnt_of_portfolio*100}% of portfolio. Transaction skipped.")
+            return "Transaction Skipped: Amount is 0"
+
         shares = amount / price
         # record the transaction
         self.record_transaction(
