@@ -98,7 +98,7 @@ class PortfolioService:
         # return #float(shares_value + cash_value)
         return shares_value_and_cash_value
 
-    def get_sharpe_ratio(self, column_name: str, risk_free_rate: float = 0.02) -> float:
+    def get_sharpe_ratio(self, column_name: str, risk_free_rate: float = 0.02, print_info: bool = True) -> float:
         """
         Calculate the Sharpe Ratio of the portfolio based on daily returns.
         :param risk_free_rate: Annual risk-free rate (default is 2%)
@@ -120,5 +120,9 @@ class PortfolioService:
 
         # Calculate Sharpe Ratio
         sharpe_ratio = (annualized_return - risk_free_rate) / annualized_std
-
+        if print_info:
+            # standard info of share_ratio
+            print("The S&P 500 historically has a Sharpe Ratio around 0.5-0.7. "
+                  "A ratio of 1.0+ means you're outperforming the broad market on a risk-adjusted basis."
+                  "A ratio of 2.0+ is considered excellent.")
         return sharpe_ratio.mean()  # Return the mean Sharpe Ratio across all assets
