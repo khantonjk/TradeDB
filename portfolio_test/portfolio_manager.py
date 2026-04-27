@@ -36,7 +36,8 @@ class PortfolioManager:
         self.portfolio_value_df.index.name = 'date'
 
         # Seed starting cash (100 SEK)
-        self._upsert_position('CASH', 100.0, 1.0, seed_date)
+        self.starting_cash = 100
+        self._upsert_position('CASH', self.starting_cash, 1.0, seed_date)
         # Record initial portfolio snapshot
         self._record_portfolio_value(seed_date)
 
@@ -190,8 +191,9 @@ class PortfolioManager:
         elif tx_type == "SELL" and pcnt_of_portfolio > 0 and not (pcnt_of_portfolio > 1):
             # percentage of ticker position
             if ticker not in self.positions_df.index:
-                raise ValueError(f"Ticker {ticker} not found in portfolio positions for SELL transaction.")
-            shares = self.positions_df.loc[ticker, 'net_shares'] * pcnt_of_portfolio
+                shares = 0
+            else:
+                shares = self.positions_df.loc[ticker, 'net_shares'] * pcnt_of_portfolio
 
         else:
             raise ValueError(
@@ -204,7 +206,7 @@ class PortfolioManager:
             if tx_type == "BUY":
                 print(f"Current CASH balance: {self.get_cash_balance()}. Price to purchase: {stock_price*shares}.")
             elif tx_type == "SELL":
-                print(f"Current shares of {ticker}: {self.positions_df.loc[ticker, 'net_shares']}. ")
+                print(f"Current shares of {ticker} is {shares}.")
 
             return "Transaction Skipped: Shares to trade is 0"
 
