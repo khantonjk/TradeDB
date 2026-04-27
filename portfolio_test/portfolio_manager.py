@@ -18,7 +18,8 @@ class PortfolioManager:
         """Initialize empty DataFrames for trades and positions."""
         # DataFrame to store all transactions (trade history)
         self.trades_df = pd.DataFrame(
-            columns=['transaction_datetime', 'transaction_type', 'ticker', 'shares', 'actual_price', 'currency', 'amount']
+            columns=['transaction_datetime', 'transaction_type', 'ticker', 'shares', 'actual_price', 'currency',
+                     'amount']
         )
         self.trades_df['transaction_datetime'] = pd.to_datetime(self.trades_df['transaction_datetime'])
 
@@ -113,11 +114,11 @@ class PortfolioManager:
 
     # def _update_prices_of_all_positions(self, price_map: dict[str, float], tx_datetime: str):
     def record_transaction_percentage_buy_sell(self,
-                                              tx_type: str,
-                                              ticker: str,
-                                              pcnt_of_portfolio: float,
-                                              data_one_date: pd.Series,
-                                              currency: str = 'SEK'):
+                                               tx_type: str,
+                                               ticker: str,
+                                               pcnt_of_portfolio: float,
+                                               data_one_date: pd.Series,
+                                               currency: str = 'SEK'):
         """
         Set amount to buy in percantage of the current portfolio value. For example,
         if the portfolio is worth 1000 SEK and you want to buy 10% of it in AAPL, you would call:
@@ -135,7 +136,7 @@ class PortfolioManager:
             current_cash = self.get_cash_balance()
             # calculate amount to buy in SEK
             amount = current_cash * pcnt_of_portfolio
-        elif tx_type == "SELL" and pcnt_of_portfolio > 0 and not (pcnt_of_portfolio > 1) : # TODO: Test this part
+        elif tx_type == "SELL" and pcnt_of_portfolio > 0 and not (pcnt_of_portfolio > 1):  # TODO: Test this part
             # percentage of ticker position
             if ticker not in self.positions_df.index:
                 raise ValueError(f"Ticker {ticker} not found in portfolio positions for SELL transaction.")
@@ -144,14 +145,17 @@ class PortfolioManager:
             amount = shares_to_sell * price
 
         else:
-            raise ValueError("Invalid transaction type or percentage (not over 100%). Must be 'BUY' or 'SELL' with positive percentage.")
+            raise ValueError(
+                "Invalid transaction type or percentage (not over 100%). Must be 'BUY' or 'SELL' with positive percentage.")
         # calculate shares to buy
         if amount == 0:
-            print(f"⚠️  Calculated amount is 0 for {tx_type} {ticker} at {pcnt_of_portfolio*100}% of portfolio. Transaction skipped.")
+            print(
+                f"⚠️  Calculated amount is 0 for {tx_type} {ticker} at {pcnt_of_portfolio * 100}% of portfolio. Transaction skipped.")
             return "Transaction Skipped: Amount is 0"
 
         shares = amount / price
-        # record the transaction
+        # record the transaction. Transactions are recorded as shares of actual price, so the
+        # amount is not directly used here, but it is calculated for validation and logging purposes.
         self.record_transaction(
             tx_type=tx_type,
             ticker=ticker,
@@ -190,7 +194,7 @@ class PortfolioManager:
 
         # Disallow 'CASH' ticker since DEPOSIT is removed
         if ticker == 'CASH':
-            raise ValueError("Ticker 'CASH' is not supported; cash deposits/removals are disabled.")
+            raise ValueError("Ticker 'CASH' is not supported.")
 
         # Convert currency and normalize datetime
         actual_price, currency = self._convert_price_and_currency_to_sek(actual_price, currency)
@@ -209,7 +213,8 @@ class PortfolioManager:
 
             # Validate sufficient shares for SELL
             if tx_type == 'SELL':
-                current_stock = self.positions_df.loc[ticker, 'net_shares'] if ticker in self.positions_df.index else 0.0
+                current_stock = self.positions_df.loc[
+                    ticker, 'net_shares'] if ticker in self.positions_df.index else 0.0
                 if current_stock < shares:
                     print(f"❌ Insufficient shares to SELL {shares} of {ticker}. "
                           f"Current Shares: {current_stock}")
@@ -246,7 +251,7 @@ class PortfolioManager:
             # --- 4. Record Portfolio Value ---
             self._record_portfolio_value(tx_datetime)
 
-            print(f"{tx_datetime}: ✅ Recorded {tx_type}: {ticker} @ {total_amount/shares}. Snapshot updated.")
+            print(f"{tx_datetime}: ✅ Recorded {tx_type}: {ticker} @ {total_amount / shares}. Snapshot updated.")
 
         except Exception as e:
             print(f"❌ Transaction failed: {e}")
@@ -259,7 +264,7 @@ class PortfolioManager:
         # Get all tickers with positive shares (excluding CASH)
         assets_to_sell = self.positions_df[
             (self.positions_df.index != 'CASH') & (self.positions_df['net_shares'] > 0)
-        ]
+            ]
 
         for ticker in assets_to_sell.index:
             shares = self.positions_df.loc[ticker, 'net_shares']
@@ -302,7 +307,8 @@ class PortfolioManager:
             return self.portfolio_value_df.iloc[-1]['total_value']
         return 0.0
 
-    def set_cash(self, amount: float, tx_datetime: Union[str, datetime, pd.Timestamp, None] = None, currency: str = 'SEK') -> None:
+    def set_cash(self, amount: float, tx_datetime: Union[str, datetime, pd.Timestamp, None] = None,
+                 currency: str = 'SEK') -> None:
         """
         Set the portfolio cash balance to an absolute amount (replaces current cash).
 
