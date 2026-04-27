@@ -33,3 +33,5 @@ forge_data.py: The "Data Forger." Contains the DataForge class for aggregating v
 portfolio_manager.py: The "Portfolio Manager." Handles all portfolio operations, including recording transactions, updating positions, managing cash, and tracking portfolio value using DataFrames.
 
 trading_strategy_*.ipynb: Jupyter Notebooks containing examples of functions, strategy logic, and backtesting workflows.
+
+// Signed off by Anton
