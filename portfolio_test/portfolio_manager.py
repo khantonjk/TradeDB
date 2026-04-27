@@ -67,7 +67,7 @@ class PortfolioManager:
 
         return actual_price, currency
 
-    def _upsert_position(self, ticker: str, share_change: float, price: float, tx_datetime: str):
+    def _upsert_position(self, ticker: str, share_change: float, stock_price: float, tx_datetime: str):
         """
         Updates the positions DataFrame for a specific ticker.
         Handles both Stock and CASH updates.
@@ -80,7 +80,7 @@ class PortfolioManager:
 
         # Calculate New State
         new_shares = current_shares + share_change
-        new_price = price if ticker != 'CASH' else 1.0
+        new_price = stock_price if ticker != 'CASH' else 1.0
         new_total_value = new_shares * new_price
 
         # UPSERT (Insert or Update)
@@ -104,6 +104,10 @@ class PortfolioManager:
         self.portfolio_value_df.loc[date_index] = [total_value, cash_balance, stock_value]
 
     def _find_price_for_ticker_in_data(self, ticker: str, data: pd.Series) -> float:
+        """
+        For 1 single date, find the price for the given ticker in the provided data Series.
+        :param ticker: Example AAPL
+        """
         token = f"Close ({ticker.upper()})"
         labels = list(data.index)
         if token in labels:
@@ -112,7 +116,49 @@ class PortfolioManager:
             raise ValueError(f"Price for ticker {ticker} not found in data. Expected column like '{token}'."
                              f" Available columns: {labels}")
 
-    # def _update_prices_of_all_positions(self, price_map: dict[str, float], tx_datetime: str):
+    def update_portfolio_prices(self, price_data_for_date: pd.Series):
+        """
+        Updates the prices of all non-cash assets in the portfolio for a given date
+        and records the updated portfolio value. This does not generate trade records.
+
+        Args:
+            price_data_for_date: A pandas Series containing the latest prices for assets
+                                 for a single date. The index of the Series should contain
+                                 labels like 'Close (TICKER)' for each asset.
+                                 The name of the Series should be the date of the prices.
+        """
+        if price_data_for_date.empty:
+            print("⚠️  No price data provided. Skipping price update.")
+            return
+
+        # Extract date from the Series name
+        tx_datetime = price_data_for_date.name
+        if tx_datetime is None:
+            raise ValueError("price_data_for_date Series must have a name representing the date.")
+
+        normalized_datetime = self._normalize_datetime(tx_datetime)
+
+        print(f"Updating portfolio prices for {normalized_datetime}...")
+
+        # Iterate through existing positions and update their values
+        for ticker in self.positions_df.index:
+            if ticker == 'CASH':
+                continue # Skip cash, its value is constant at 1.0 per share
+
+            current_shares = self.positions_df.loc[ticker, 'net_shares']
+            if current_shares != 0: # Only update if we actually hold shares or short positions
+                try:
+                    new_price = self._find_price_for_ticker_in_data(ticker, price_data_for_date)
+                    # Update last_trade_price and total_position_value
+                    self.positions_df.loc[ticker, 'last_trade_price'] = new_price
+                    self.positions_df.loc[ticker, 'total_position_value'] = current_shares * new_price
+                except ValueError as e:
+                    print(f"⚠️  Could not update price for {ticker} on {normalized_datetime}: {e}")
+
+        # After updating all relevant positions, record the new portfolio value
+        self._record_portfolio_value(normalized_datetime)
+        print(f"✅ Portfolio value history updated for {normalized_datetime} based on new prices.")
+
     def record_transaction_percentage_buy_sell(self,
                                                tx_type: str,
                                                ticker: str,
@@ -123,8 +169,14 @@ class PortfolioManager:
         Set amount to buy in percantage of the current portfolio value. For example,
         if the portfolio is worth 1000 SEK and you want to buy 10% of it in AAPL, you would call:
         """
-        # get price from data
-        price = self._find_price_for_ticker_in_data(ticker, data_one_date)
+        if not isinstance(data_one_date, pd.Series):
+            raise TypeError("data_one_date must be a pandas Series representing price data for the study date.")
+        self.update_portfolio_prices(data_one_date)
+
+        # update the price of the ticker for the date of the transaction, so we can calculate the shares to buy/sell
+
+        stock_price = self._find_price_for_ticker_in_data(ticker, data_one_date)
+
         # Date should be series index
         date = data_one_date.name
         # convert pd Timestamp to string
@@ -132,35 +184,38 @@ class PortfolioManager:
         if date is None:
             raise ValueError("data_one_date must have a valid index representing the date.")
         if tx_type == "BUY" and pcnt_of_portfolio > 0:
-            # get current cash balance
-            current_cash = self.get_cash_balance()
-            # calculate amount to buy in SEK
-            amount = current_cash * pcnt_of_portfolio
-        elif tx_type == "SELL" and pcnt_of_portfolio > 0 and not (pcnt_of_portfolio > 1):  # TODO: Test this part
+
+            # get current cash balance, see how many shares we can buy with the percentage of the portfolio value
+            shares = self.get_cash_balance() * pcnt_of_portfolio / stock_price
+        elif tx_type == "SELL" and pcnt_of_portfolio > 0 and not (pcnt_of_portfolio > 1):
             # percentage of ticker position
             if ticker not in self.positions_df.index:
                 raise ValueError(f"Ticker {ticker} not found in portfolio positions for SELL transaction.")
-            current_shares = self.positions_df.loc[ticker, 'net_shares']
-            shares_to_sell = current_shares * pcnt_of_portfolio
-            amount = shares_to_sell * price
+            shares = self.positions_df.loc[ticker, 'net_shares'] * pcnt_of_portfolio
 
         else:
             raise ValueError(
                 "Invalid transaction type or percentage (not over 100%). Must be 'BUY' or 'SELL' with positive percentage.")
         # calculate shares to buy
-        if amount == 0:
+        if shares == 0:
             print(
-                f"⚠️  Calculated amount is 0 for {tx_type} {ticker} at {pcnt_of_portfolio * 100}% of portfolio. Transaction skipped.")
-            return "Transaction Skipped: Amount is 0"
+                f"⚠️  Calculated shares to {tx_type} is 0 for {ticker} at {pcnt_of_portfolio * 100}% of portfolio. "
+            )
+            if tx_type == "BUY":
+                print(f"Current CASH balance: {self.get_cash_balance()}. Price to purchase: {stock_price*shares}.")
+            elif tx_type == "SELL":
+                print(f"Current shares of {ticker}: {self.positions_df.loc[ticker, 'net_shares']}. ")
 
-        shares = amount / price
+            return "Transaction Skipped: Shares to trade is 0"
+
+
         # record the transaction. Transactions are recorded as shares of actual price, so the
         # amount is not directly used here, but it is calculated for validation and logging purposes.
         self.record_transaction(
             tx_type=tx_type,
             ticker=ticker,
             shares=shares,
-            actual_price=price,
+            stock_price=stock_price,
             tx_datetime=date,
             currency=currency
         )
@@ -169,7 +224,7 @@ class PortfolioManager:
                            tx_type: str,
                            ticker: str,
                            shares: float,
-                           actual_price: float,
+                           stock_price: float,
                            tx_datetime: Union[str, datetime, pd.Timestamp, None],
                            currency: str = 'SEK'):
         """
@@ -180,7 +235,7 @@ class PortfolioManager:
             tx_type: 'BUY', 'SELL'
             ticker: Stock symbol (e.g. 'AAPL') or 'CASH' for deposits
             shares: Number of shares (float allowed)
-            actual_price: Price per share
+            stock_price: Price per share
             tx_datetime: Transaction date/time
             currency: Currency of the actual_price (default 'SEK')
         """
@@ -197,10 +252,10 @@ class PortfolioManager:
             raise ValueError("Ticker 'CASH' is not supported.")
 
         # Convert currency and normalize datetime
-        actual_price, currency = self._convert_price_and_currency_to_sek(actual_price, currency)
+        stock_price, currency = self._convert_price_and_currency_to_sek(stock_price, currency)
         tx_datetime = self._normalize_datetime(tx_datetime)
 
-        total_amount = shares * actual_price
+        total_amount = shares * stock_price
 
         try:
             # Validate sufficient liquidity for BUY
@@ -226,15 +281,15 @@ class PortfolioManager:
                 'transaction_type': tx_type,
                 'ticker': ticker,
                 'shares': shares,
-                'actual_price': actual_price,
+                'stock_price': stock_price,
                 'currency': currency,
                 'amount': total_amount
             }
             self.trades_df = pd.concat([self.trades_df, pd.DataFrame([trade_record])], ignore_index=True)
 
-            # --- 2. Update Stock Position ---
+            # --- 2. Upsert Stock Position ---
             stock_change = shares if tx_type == 'BUY' else -shares
-            self._upsert_position(ticker, stock_change, actual_price, tx_datetime)
+            self._upsert_position(ticker, stock_change, stock_price, tx_datetime)
 
             # --- 3. Update CASH Balance ---
             if ticker != 'CASH':
@@ -274,7 +329,7 @@ class PortfolioManager:
                 tx_type='SELL',
                 ticker=ticker,
                 shares=shares,
-                actual_price=last_price,
+                stock_price=last_price,
                 tx_datetime=tx_datetime
             )
 
