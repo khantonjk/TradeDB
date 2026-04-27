@@ -18,7 +18,7 @@ class PortfolioManager:
         """Initialize empty DataFrames for trades and positions."""
         # DataFrame to store all transactions (trade history)
         self.trades_df = pd.DataFrame(
-            columns=['transaction_datetime', 'transaction_type', 'ticker', 'shares', 'actual_price', 'currency',
+            columns=['transaction_datetime', 'transaction_type', 'ticker', 'shares', 'price', 'currency',
                      'amount']
         )
         self.trades_df['transaction_datetime'] = pd.to_datetime(self.trades_df['transaction_datetime'])
@@ -53,9 +53,9 @@ class PortfolioManager:
 
         return dt_obj.strftime('%Y-%m-%d')
 
-    def _convert_price_and_currency_to_sek(self, actual_price: float, currency: Optional[str]) -> tuple[float, str]:
+    def _convert_price_and_currency_to_sek(self, price: float, currency: Optional[str]) -> tuple[float, str]:
         """
-        Converts the actual_price to SEK based on the provided currency.
+        Converts the price to SEK based on the provided currency.
         """
         currency = currency.upper()
         if currency not in currency_conversion_rates.keys():
@@ -63,10 +63,10 @@ class PortfolioManager:
 
         if currency != 'SEK':
             conversion_rate = currency_conversion_rates[currency]
-            actual_price = round(actual_price * conversion_rate, 4)
+            price = round(price * conversion_rate, 4)
             currency = 'SEK'
 
-        return actual_price, currency
+        return price, currency
 
     def _upsert_position(self, ticker: str, share_change: float, stock_price: float, tx_datetime: str):
         """
@@ -239,7 +239,7 @@ class PortfolioManager:
             shares: Number of shares (float allowed)
             stock_price: Price per share
             tx_datetime: Transaction date/time
-            currency: Currency of the actual_price (default 'SEK')
+            currency: Currency of the stock price (default 'SEK')
         """
         # Validate transaction type
         if tx_type:
@@ -283,7 +283,7 @@ class PortfolioManager:
                 'transaction_type': tx_type,
                 'ticker': ticker,
                 'shares': shares,
-                'stock_price': stock_price,
+                'price': stock_price,
                 'currency': currency,
                 'amount': total_amount
             }
@@ -398,7 +398,7 @@ class PortfolioManager:
             'transaction_type': 'SET_CASH',
             'ticker': 'CASH',
             'shares': actual_amount,
-            'actual_price': 1.0,
+            'price': 1.0,
             'currency': 'SEK',
             'amount': actual_amount
         }
