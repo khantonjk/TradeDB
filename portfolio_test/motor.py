@@ -40,4 +40,42 @@ class CalculationMotor(yf.Ticker):
             return end
         return pd.Timestamp.today().strftime('%Y-%m-%d')
 
-    # unpacking function to get PE ratio at dates and other measeruments
+    def get_daily_pe_ratio(self) -> pd.Series:
+        """
+        Estimates the daily P/E ratio by taking the daily 'Close' price 
+        and dividing it by the most recently reported annual EPS.
+        Since YFinance only reports earnings annually, this forward-fills 
+        the EPS to give a daily PE estimate.
+        """
+        income_stmt = self.income_stmt
+        
+        if 'Basic EPS' not in income_stmt.index and 'Diluted EPS' not in income_stmt.index:
+            raise ValueError(f"EPS data not found in income statement for {self.ticker}.")
+            
+        eps_key = 'Basic EPS' if 'Basic EPS' in income_stmt.index else 'Diluted EPS'
+        
+        # Extract the EPS row, sort by date ascending, and convert to numeric
+        eps_series = pd.to_numeric(income_stmt.loc[eps_key]).sort_index(ascending=True)
+        eps_series = self._convert_to_sek(eps_series, self.history_metadata['currency'])
+        
+        # Align EPS with daily price data
+        daily_prices = self.df['Adj Close']
+        eps_df = pd.DataFrame({'EPS': eps_series})
+        prices_df = pd.DataFrame({'Adj Close': daily_prices})
+        
+        # Outer join ensures we don't lose EPS data reported on non-trading days
+        combined = prices_df.join(eps_df, how='outer')
+        
+        # Forward-fill previous earnings, back-fill for dates prior to first report
+        combined['EPS'] = combined['EPS'].ffill().bfill()
+        
+        # Keep only valid trading days and compute PE
+        combined = combined.dropna(subset=['Adj Close'])
+        
+        # Prevent division by zero
+        combined['EPS'] = combined['EPS'].replace(0, pd.NA)
+        
+        pe_ratio = combined['Adj Close'] / combined['EPS']
+        pe_ratio.name = f"PE_Ratio ({self.ticker})"
+        
+        return pe_ratio

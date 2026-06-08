@@ -185,7 +185,6 @@ class PortfolioManager:
         if date is None:
             raise ValueError("data_one_date must have a valid index representing the date.")
         if tx_type == "BUY" and pcnt_of_portfolio > 0:
-
             # get current cash balance, see how many shares we can buy with the percentage of the portfolio value
             shares = self.get_cash_balance() * pcnt_of_portfolio / stock_price
         elif tx_type == "SELL" and pcnt_of_portfolio > 0 and not (pcnt_of_portfolio > 1):
@@ -194,10 +193,18 @@ class PortfolioManager:
                 shares = 0
             else:
                 shares = self.positions_df.loc[ticker, 'net_shares'] * pcnt_of_portfolio
-
+        elif tx_type == "SHORT" and pcnt_of_portfolio > 0:
+            # Short using a percentage of portfolio equity as margin
+            shares = self.get_current_portfolio_value() * pcnt_of_portfolio / stock_price
+        elif tx_type == "COVER" and pcnt_of_portfolio > 0 and not (pcnt_of_portfolio > 1):
+            if ticker not in self.positions_df.index:
+                shares = 0
+            else:
+                current_shares = self.positions_df.loc[ticker, 'net_shares']
+                shares = abs(current_shares) * pcnt_of_portfolio if current_shares < 0 else 0
         else:
             raise ValueError(
-                "Invalid transaction type or percentage (not over 100%). Must be 'BUY' or 'SELL' with positive percentage.")
+                "Invalid transaction type or percentage. Must be 'BUY', 'SELL', 'SHORT', or 'COVER' with positive percentage.")
         # calculate shares to buy
         if shares == 0:
             print(
@@ -244,8 +251,8 @@ class PortfolioManager:
         # Validate transaction type
         if tx_type:
             tx_type = tx_type.upper()
-            if tx_type not in ('BUY', 'SELL'):
-                raise ValueError("Transaction type must be one of 'BUY' or 'SELL'.")
+            if tx_type not in ('BUY', 'SELL', 'SHORT', 'COVER'):
+                raise ValueError("Transaction type must be one of 'BUY', 'SELL', 'SHORT', 'COVER'.")
         else:
             raise ValueError("Transaction type must be provided.")
 
@@ -260,8 +267,8 @@ class PortfolioManager:
         total_amount = shares * stock_price
 
         try:
-            # Validate sufficient liquidity for BUY
-            if tx_type == 'BUY':
+            # Validate sufficient liquidity for BUY or COVER
+            if tx_type in ('BUY', 'COVER'):
                 current_cash = self.get_cash_balance()
                 if current_cash < total_amount:
                     print(f"❌ Insufficient cash balance to {tx_type} {total_amount} of {ticker}. "
@@ -276,9 +283,26 @@ class PortfolioManager:
                     print(f"❌ Insufficient shares to SELL {shares} of {ticker}. "
                           f"Current Shares: {current_stock}")
                     return "Transaction Denied: Insufficient Shares"
+                    
+            # Validate margin for SHORT (100% margin requirement: Total Equity >= short value)
+            if tx_type == 'SHORT':
+                current_equity = self.get_current_portfolio_value()
+                if current_equity < total_amount:
+                    print(f"❌ Insufficient margin to SHORT {total_amount} of {ticker}. "
+                          f"Current Equity: {current_equity}")
+                    return "Transaction Denied: Insufficient Margin"
+                    
+            # Validate we have short shares to COVER
+            if tx_type == 'COVER':
+                current_stock = self.positions_df.loc[
+                    ticker, 'net_shares'] if ticker in self.positions_df.index else 0.0
+                if current_stock > -shares:
+                    print(f"❌ Insufficient short position to COVER {shares} of {ticker}. "
+                          f"Current Short Shares: {-current_stock}")
+                    return "Transaction Denied: Insufficient Short Shares"
 
             # --- 1. Log the Trade ---
-            trade_record = {
+            trade_record = pd.DataFrame([{
                 'transaction_datetime': tx_datetime,
                 'transaction_type': tx_type,
                 'ticker': ticker,
@@ -286,19 +310,24 @@ class PortfolioManager:
                 'price': stock_price,
                 'currency': currency,
                 'amount': total_amount
-            }
-            self.trades_df = pd.concat([self.trades_df, pd.DataFrame([trade_record])], ignore_index=True)
+            }])
+            
+            if self.trades_df.empty:
+                self.trades_df = trade_record
+            else:
+                # Remove empty/all-NA columns before concat to avoid FutureWarning
+                self.trades_df = pd.concat([self.trades_df.dropna(axis=1, how='all'), trade_record], ignore_index=True)
 
             # --- 2. Upsert Stock Position ---
-            stock_change = shares if tx_type == 'BUY' else -shares
+            stock_change = shares if tx_type in ('BUY', 'COVER') else -shares
             self._upsert_position(ticker, stock_change, stock_price, tx_datetime)
 
             # --- 3. Update CASH Balance ---
             if ticker != 'CASH':
                 cash_change = 0.0
-                if tx_type == 'BUY':
+                if tx_type in ('BUY', 'COVER'):
                     cash_change = -total_amount
-                elif tx_type == 'SELL':
+                elif tx_type in ('SELL', 'SHORT'):
                     cash_change = total_amount
 
                 if cash_change != 0.0:
@@ -314,26 +343,31 @@ class PortfolioManager:
             print(f"❌ Transaction failed: {e}")
             return f"Transaction Denied: {str(e)}"
 
-    def sell_all_assets(self, tx_datetime: Union[str, datetime, pd.Timestamp, None] = None):
+    def close_all_positions(self, tx_datetime: Union[str, datetime, pd.Timestamp, None] = None):
         """
-        Sells all non-cash assets in the portfolio.
+        Sells all long positions and covers all short positions.
         """
-        # Get all tickers with positive shares (excluding CASH)
-        assets_to_sell = self.positions_df[
-            (self.positions_df.index != 'CASH') & (self.positions_df['net_shares'] > 0)
-            ]
+        assets_to_close = self.positions_df[
+            (self.positions_df.index != 'CASH') & (self.positions_df['net_shares'] != 0)
+        ]
 
-        for ticker in assets_to_sell.index:
+        for ticker in assets_to_close.index:
             shares = self.positions_df.loc[ticker, 'net_shares']
             last_price = self.positions_df.loc[ticker, 'last_trade_price']
 
+            tx_type = 'SELL' if shares > 0 else 'COVER'
+            
             self.record_transaction(
-                tx_type='SELL',
+                tx_type=tx_type,
                 ticker=ticker,
-                shares=shares,
+                shares=abs(shares),
                 stock_price=last_price,
                 tx_datetime=tx_datetime
             )
+
+    def sell_all_assets(self, tx_datetime: Union[str, datetime, pd.Timestamp, None] = None):
+        """Backward compatibility: delegates to close_all_positions"""
+        self.close_all_positions(tx_datetime)
 
     # ---------------------------------------------------------
     # Reporting & Getters
@@ -393,7 +427,7 @@ class PortfolioManager:
         change = round(actual_amount - current_cash, 4)
 
         # Log the cash-set operation in trades history for auditing
-        trade_record = {
+        trade_record = pd.DataFrame([{
             'transaction_datetime': tx_datetime,
             'transaction_type': 'SET_CASH',
             'ticker': 'CASH',
@@ -401,8 +435,12 @@ class PortfolioManager:
             'price': 1.0,
             'currency': 'SEK',
             'amount': actual_amount
-        }
-        self.trades_df = pd.concat([self.trades_df, pd.DataFrame([trade_record])], ignore_index=True)
+        }])
+        
+        if self.trades_df.empty:
+            self.trades_df = trade_record
+        else:
+            self.trades_df = pd.concat([self.trades_df.dropna(axis=1, how='all'), trade_record], ignore_index=True)
 
         # Apply the change to the CASH position
         if change != 0.0:

@@ -26,12 +26,10 @@ Full support for fractional trading (e.g., buying 0.5 shares).
 
 ### Project Structure
 
-motor.py: The "Engine." Contains the CalculationMotor class for fetching OHLC data and computing basic indicators.
-
-forge_data.py: The "Data Forger." Contains the DataForge class for aggregating various data series into a single DataFrame.
-
-portfolio_manager.py: The "Portfolio Manager." Handles all portfolio operations, including recording transactions, updating positions, managing cash, and tracking portfolio value using DataFrames.
-
-trading_strategy_*.ipynb: Jupyter Notebooks containing examples of functions, strategy logic, and backtesting workflows.
+- **`motor.py` (The Calculation Motor)**: The "Engine" wrapper around yfinance that fetches OHLC price history and computes fundamental metrics like TTM EPS and P/E Ratios.
+- **`forge_data.py` (The Data Forger)**: Responsible for aggregating various data series into a unified DataFrame.
+- **`portfolio_manager.py` (The Portfolio Manager)**: Manages the in-memory portfolio using DataFrames. It handles recording buy/sell transactions, supporting fractional shares, maintaining current positions, and automatically adjusting your cash balance.
+- **`portfolio_service.py` (The Portfolio Statistics Service)**: A professional-grade statistics engine that evaluates your strategy's performance against a benchmark (e.g., S&P 500). It calculates crucial risk and performance metrics such as Risk-Adjusted Returns (Sharpe Ratio), Risk Metrics (Volatility, Max Drawdown), Trade Statistics (Win Rate), and Absolute Returns.
+- **`trading_strategy_*.ipynb` (Jupyter Notebooks)**: Workspaces where you design and backtest your strategies, leveraging the Calculation Motor for data, the Portfolio Manager to simulate trades, and the Statistics Service to generate comprehensive performance reports comparing your strategy to market benchmarks.
 
 // Signed off by Anton

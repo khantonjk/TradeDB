@@ -1,0 +1,26 @@
+# Python environments
+venv_portfolio/
+env/
+venv/
+.env
+
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Output files & Data
+*.csv
+*.png
+*.jpg
+*.jpeg
+
+# IDEs and Editors
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS generated files
+.DS_Store
+Thumbs.db

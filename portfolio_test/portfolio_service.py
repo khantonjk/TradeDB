@@ -1,35 +1,15 @@
 import pandas as pd
 import numpy as np
-
+import matplotlib.pyplot as plt
 
 class PortfolioStatisticsService:
     def __init__(self, portfolio_manager, benchmark_series: pd.Series = None):
-        """
-        Initialize the Portfolio Statistics Service.
-
-        This service calculates comprehensive performance metrics for a portfolio,
-        including Sharpe ratio, drawdown analysis, win rate, and benchmark comparison.
-
-        :param portfolio_manager: Instance of PortfolioManager class
-                                 Must have these attributes/methods:
-                                 - starting_cash (float): Initial capital amount
-                                 - get_portfolio_value_history() → DataFrame with 'total_value' column
-                                 - get_trades_history() → DataFrame with trade records
-                                 - get_current_portfolio_value() → float
-
-        :param benchmark_series: Optional pd.Series with benchmark prices (e.g., S&P 500)
-                                 Index should be dates, values should be prices.
-                                 If provided, enables benchmark comparison features.
-                                 If None, comparison methods will raise ValueError.
-        """
         self.pm = portfolio_manager
         self.benchmark_series = self._validate_benchmark(benchmark_series)
         self.portfolio_value_history = self.pm.get_portfolio_value_history()
         self.trades_history = self.pm.get_trades_history()
 
-
     def _validate_benchmark(self, benchmark_series):
-        """Validate and normalize benchmark series."""
         if benchmark_series is None:
             return None
         series = benchmark_series.copy()
@@ -38,40 +18,21 @@ class PortfolioStatisticsService:
         series = series.sort_index(ascending=True)
         return series
 
-
     def get_total_valuation(self) -> float:
-        """
-        Get the current portfolio valuation.
-        Returns the most recent portfolio total value.
-        """
         return self.pm.get_current_portfolio_value()
 
     def get_portfolio_returns(self) -> pd.Series:
-        """
-        Calculate daily portfolio returns based on portfolio value history.
-        Returns a pandas Series of daily returns.
-        """
         portfolio_values = self.portfolio_value_history['total_value'].copy()
         daily_returns = portfolio_values.pct_change().dropna()
         return daily_returns
 
     def get_benchmark_returns(self) -> pd.Series:
-        """
-        Calculate daily benchmark returns.
-        Returns a pandas Series of daily returns from the benchmark.
-        """
         if self.benchmark_series is None:
             raise ValueError("Benchmark series not provided.")
         daily_returns = self.benchmark_series.pct_change().dropna()
         return daily_returns
 
     def get_sharpe_ratio(self, risk_free_rate: float = 0.02) -> dict:
-        """
-        Calculate the Sharpe Ratio for the portfolio.
-
-        :param risk_free_rate: Annual risk-free rate (default 2%)
-        :return: Dictionary with annualized return, volatility, and sharpe ratio
-        """
         daily_returns = self.get_portfolio_returns()
 
         if daily_returns.empty:
@@ -96,12 +57,6 @@ class PortfolioStatisticsService:
         }
 
     def get_benchmark_sharpe_ratio(self, risk_free_rate: float = 0.02) -> dict:
-        """
-        Calculate the Sharpe Ratio for the benchmark.
-
-        :param risk_free_rate: Annual risk-free rate (default 2%)
-        :return: Dictionary with annualized return, volatility, and sharpe ratio
-        """
         if self.benchmark_series is None:
             raise ValueError("Benchmark series not provided.")
 
@@ -129,19 +84,11 @@ class PortfolioStatisticsService:
         }
 
     def get_total_return(self) -> float:
-        """
-        Calculate total return from start to end.
-        Returns the percentage gain/loss.
-        """
         starting_value = self.pm.starting_cash
         ending_value = self.get_total_valuation()
         return (ending_value - starting_value) / starting_value
 
     def get_benchmark_total_return(self) -> float:
-        """
-        Calculate total return of the benchmark.
-        Returns the percentage gain/loss.
-        """
         if self.benchmark_series is None:
             raise ValueError("Benchmark series not provided.")
 
@@ -150,17 +97,8 @@ class PortfolioStatisticsService:
         return (end_price - start_price) / start_price
 
     def get_max_drawdown(self) -> dict:
-        """
-        Calculate the maximum drawdown of the portfolio.
-
-        :return: Dictionary with max drawdown percentage and period info
-        """
         portfolio_values = self.portfolio_value_history['total_value'].copy()
-
-        # Calculate running maximum
         running_max = portfolio_values.expanding().max()
-
-        # Calculate drawdown
         drawdown = (portfolio_values - running_max) / running_max
 
         max_drawdown = drawdown.min()
@@ -173,11 +111,6 @@ class PortfolioStatisticsService:
         }
 
     def get_benchmark_max_drawdown(self) -> dict:
-        """
-        Calculate the maximum drawdown of the benchmark.
-
-        :return: Dictionary with max drawdown percentage and period info
-        """
         if self.benchmark_series is None:
             raise ValueError("Benchmark series not provided.")
 
@@ -196,32 +129,39 @@ class PortfolioStatisticsService:
 
     def get_win_rate(self) -> dict:
         """
-        Calculate the win rate based on trades.
-
-        :return: Dictionary with win rate and trade statistics
+        Calculates the win rate of the portfolio based on completed trades.
+        Handles both LONG (BUY -> SELL) and SHORT (SHORT -> COVER) trades.
         """
-        trades = self.trades_history[self.trades_history['transaction_type'].isin(['BUY', 'SELL'])].copy()
-
-        if len(trades) == 0:
-            return {'win_rate': 0, 'winning_trades': 0, 'losing_trades': 0, 'total_trades': 0}
-
-        # Simple approach: match buy/sell pairs and check if they're profitable
-        buy_trades = trades[trades['transaction_type'] == 'BUY'].copy()
-        sell_trades = trades[trades['transaction_type'] == 'SELL'].copy()
-
         winning_trades = 0
         losing_trades = 0
 
-        for ticker in buy_trades['ticker'].unique():
-            buy_price = buy_trades[buy_trades['ticker'] == ticker]['stock_price'].values
-            sell_price = sell_trades[sell_trades['ticker'] == ticker]['stock_price'].values
+        # Calculate Long Trades
+        long_trades = self.trades_history[self.trades_history['transaction_type'].isin(['BUY', 'SELL'])].copy()
+        if len(long_trades) > 0:
+            buy_trades = long_trades[long_trades['transaction_type'] == 'BUY']
+            sell_trades = long_trades[long_trades['transaction_type'] == 'SELL']
+            for ticker in buy_trades['ticker'].unique():
+                buy_price = buy_trades[buy_trades['ticker'] == ticker]['price'].values
+                sell_price = sell_trades[sell_trades['ticker'] == ticker]['price'].values
+                for b, s in zip(buy_price, sell_price):
+                    if s > b:
+                        winning_trades += 1
+                    else:
+                        losing_trades += 1
 
-            if len(buy_price) > 0 and len(sell_price) > 0:
-                # Simple: compare most recent buy to most recent sell
-                if sell_price[-1] > buy_price[-1]:
-                    winning_trades += 1
-                else:
-                    losing_trades += 1
+        # Calculate Short Trades
+        short_trades = self.trades_history[self.trades_history['transaction_type'].isin(['SHORT', 'COVER'])].copy()
+        if len(short_trades) > 0:
+            short_entry = short_trades[short_trades['transaction_type'] == 'SHORT']
+            cover_exit = short_trades[short_trades['transaction_type'] == 'COVER']
+            for ticker in short_entry['ticker'].unique():
+                entry_price = short_entry[short_entry['ticker'] == ticker]['price'].values
+                exit_price = cover_exit[cover_exit['ticker'] == ticker]['price'].values
+                for e, c in zip(entry_price, exit_price):
+                    if c < e: # For shorts, lower exit price is a win
+                        winning_trades += 1
+                    else:
+                        losing_trades += 1
 
         total_trades = winning_trades + losing_trades
         win_rate = winning_trades / total_trades if total_trades > 0 else 0
@@ -234,11 +174,6 @@ class PortfolioStatisticsService:
         }
 
     def compare_to_benchmark(self) -> dict:
-        """
-        Compare portfolio performance vs benchmark.
-
-        :return: Dictionary with comparison metrics
-        """
         if self.benchmark_series is None:
             raise ValueError("Benchmark series not provided.")
 
@@ -266,20 +201,10 @@ class PortfolioStatisticsService:
         }
 
     def print_performance_summary(self):
-        """
-        Print a comprehensive performance summary of the portfolio.
-
-        Displays:
-        - Portfolio metrics (returns, volatility, Sharpe ratio, drawdown)
-        - Trade statistics (total trades, win rate)
-        - Benchmark comparison (if benchmark is provided)
-        - Overall assessment and recommendations
-        """
         print("\n" + "=" * 90)
         print("PORTFOLIO PERFORMANCE SUMMARY".center(90))
         print("=" * 90)
 
-        # ===== PORTFOLIO METRICS =====
         portfolio_return = self.get_total_return()
         portfolio_stats = self.get_sharpe_ratio()
         portfolio_drawdown = self.get_max_drawdown()
@@ -297,7 +222,6 @@ class PortfolioStatisticsService:
         print(f"   ├─ Sharpe Ratio:            {portfolio_stats['sharpe_ratio']:>15.4f}")
         print(f"   └─ Max Drawdown:            {portfolio_drawdown['max_drawdown']*100:>14.2f}%")
 
-        # ===== TRADE STATISTICS =====
         win_rate_stats = self.get_win_rate()
         print(f"\n📈 TRADE STATISTICS:")
         print(f"   ├─ Total Trades:            {win_rate_stats['total_trades']:>15d}")
@@ -305,7 +229,6 @@ class PortfolioStatisticsService:
         print(f"   ├─ Losing Trades:           {win_rate_stats['losing_trades']:>15d}")
         print(f"   └─ Win Rate:                {win_rate_stats['win_rate']*100:>14.2f}%")
 
-        # ===== BENCHMARK COMPARISON =====
         if self.benchmark_series is not None:
             comparison = self.compare_to_benchmark()
             print(f"\n📍 BENCHMARK COMPARISON:")
@@ -318,7 +241,6 @@ class PortfolioStatisticsService:
             print(f"   ├─ Portfolio Max DD:        {comparison['portfolio_max_drawdown']*100:>14.2f}%")
             print(f"   └─ Benchmark Max DD:        {comparison['benchmark_max_drawdown']*100:>14.2f}%")
 
-            # ===== VERDICT =====
             print(f"\n🎯 VERDICT:")
             if comparison['excess_return'] > 0:
                 outperformance = comparison['excess_return'] * 100
@@ -336,3 +258,106 @@ class PortfolioStatisticsService:
             print(f"\n💡 NOTE: No benchmark provided. To enable benchmark comparison, pass a benchmark_series.")
 
         print("\n" + "=" * 90 + "\n")
+
+    def get_summary_dict(self) -> dict:
+        """Returns a dictionary of key performance metrics for easy consumption."""
+        portfolio_return = self.get_total_return()
+        
+        try:
+            portfolio_stats = self.get_sharpe_ratio()
+            annualized_return = portfolio_stats['annualized_return']
+            annualized_volatility = portfolio_stats['annualized_volatility']
+            sharpe_ratio = portfolio_stats['sharpe_ratio']
+        except Exception:
+            annualized_return = 0
+            annualized_volatility = 0
+            sharpe_ratio = 0
+            
+        try:
+            portfolio_drawdown = self.get_max_drawdown()['max_drawdown']
+        except Exception:
+            portfolio_drawdown = 0
+
+        win_rate_stats = self.get_win_rate()
+
+        summary = {
+            'Total Return': portfolio_return,
+            'Annualized Return': annualized_return,
+            'Volatility': annualized_volatility,
+            'Sharpe Ratio': sharpe_ratio,
+            'Max Drawdown': portfolio_drawdown,
+            'Total Trades': win_rate_stats['total_trades'],
+            'Win Rate': win_rate_stats['win_rate']
+        }
+        
+        if self.benchmark_series is not None:
+            try:
+                comp = self.compare_to_benchmark()
+                summary['Excess Return'] = comp['excess_return']
+                summary['Benchmark Sharpe'] = comp['benchmark_sharpe']
+            except Exception:
+                pass
+                
+        return summary
+
+    def plot_performance(self, save_path: str = None):
+        fig, axes = plt.subplots(2, 1, figsize=(12, 10), gridspec_kw={'height_ratios': [3, 1]})
+        fig.suptitle('Portfolio Performance Summary', fontsize=16)
+
+        ax1 = axes[0]
+        pv = self.portfolio_value_history.copy()
+        pv.index = pd.to_datetime(pv.index)
+        portfolio_vals = pv['total_value']
+        
+        port_norm = (portfolio_vals / portfolio_vals.iloc[0]) * 100
+        ax1.plot(port_norm.index, port_norm, label='Portfolio Strategy', color='blue', linewidth=2)
+
+        if self.benchmark_series is not None:
+            bench_vals = self.benchmark_series.copy()
+            bench_vals.index = pd.to_datetime(bench_vals.index)
+            bench_vals = bench_vals.reindex(port_norm.index).ffill().bfill()
+            bench_norm = (bench_vals / bench_vals.iloc[0]) * 100
+            ax1.plot(bench_norm.index, bench_norm, label='Benchmark', color='gray', linestyle='--', linewidth=1.5)
+
+        buys = self.trades_history[self.trades_history['transaction_type'].isin(['BUY', 'COVER'])]
+        sells = self.trades_history[self.trades_history['transaction_type'].isin(['SELL', 'SHORT'])]
+
+        # Add buys/covers (green up arrows)
+        if not buys.empty:
+            for idx, row in buys.iterrows():
+                dt = pd.to_datetime(row['transaction_datetime']).normalize()
+                if dt in pv.index:
+                    label = row['transaction_type'].capitalize() if idx == buys.index[0] else ""
+                    ax1.scatter(dt, pv.loc[dt, 'total_value'] / portfolio_vals.iloc[0] * 100,
+                                marker='^', color='green', s=100, label=label)
+
+        # Add sells/shorts (red down arrows)
+        if not sells.empty:
+            for idx, row in sells.iterrows():
+                dt = pd.to_datetime(row['transaction_datetime']).normalize()
+                if dt in pv.index:
+                    label = row['transaction_type'].capitalize() if idx == sells.index[0] else ""
+                    ax1.scatter(dt, pv.loc[dt, 'total_value'] / portfolio_vals.iloc[0] * 100,
+                                marker='v', color='red', s=100, label=label)
+
+        ax1.set_title('Normalized Value (Base 100)')
+        ax1.set_ylabel('Value')
+        ax1.legend()
+        ax1.grid(True, alpha=0.3)
+
+        ax2 = axes[1]
+        drawdown_data = self.get_max_drawdown()['drawdown_series'].copy() * 100
+        drawdown_data.index = pd.to_datetime(drawdown_data.index)
+        ax2.fill_between(drawdown_data.index, drawdown_data, 0, color='red', alpha=0.3)
+        ax2.plot(drawdown_data.index, drawdown_data, color='red', linewidth=1)
+        ax2.set_title('Portfolio Drawdown (%)')
+        ax2.set_ylabel('Drawdown %')
+        ax2.grid(True, alpha=0.3)
+
+        plt.tight_layout()
+        
+        if save_path:
+            plt.savefig(save_path)
+            print(f"Plot saved to {save_path}")
+        else:
+            plt.show()
