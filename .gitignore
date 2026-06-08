@@ -12,6 +12,7 @@ __pycache__/
 # Output files & Data
 *.csv
 *.png
+!backtest_TSLA_pe_short.png
 *.jpg
 *.jpeg
 

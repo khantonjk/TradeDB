@@ -24,6 +24,17 @@ Automatically deducts cost from your cash balance when you buy and credits cash 
 
 Full support for fractional trading (e.g., buying 0.5 shares).
 
+### 📉 Short Selling Engine:
+
+The `PortfolioManager` natively supports `SHORT` and `COVER` trades. It automatically enforces a 100% margin requirement and tracks negative share balances, allowing you to build and test strategies that profit when the market goes down!
+
+#### Example: PE Short Strategy on Tesla (TSLA)
+We implemented a sample strategy (`pe_short`) that shorts a stock when it is massively overvalued (P/E > 50) and covers the position when the valuation returns to earth (P/E < 30).
+
+As seen in the backtest below, the strategy successfully shorted TSLA before the 2022 tech crash, and executed a perfect COVER trade at the bottom!
+
+![TSLA PE Short Backtest Result](./backtest_TSLA_pe_short.png)
+
 ### Project Structure
 
 - **`motor.py` (The Calculation Motor)**: The "Engine" wrapper around yfinance that fetches OHLC price history and computes fundamental metrics like TTM EPS and P/E Ratios.
