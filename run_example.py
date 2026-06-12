@@ -8,11 +8,11 @@ from runner import run_backtest
 
 if __name__ == "__main__":
     # You can easily change these variables to test different scenarios
-    TICKER = "TSLA"
+    TICKER = "TLT"
     START_DATE = "2021-01-01"
-    END_DATE = "2024-01-01"
-    STRATEGY = "pe_short"
-    BENCHMARK = "^GSPC"
+    END_DATE = "2023-12-31"
+    STRATEGY = "duration_management"
+    BENCHMARK = "TLT"
     SAVE_PLOT = False  # Set to True if you want to save the image instead of displaying it
 
     print(f"Executing simple run script for {TICKER}...")

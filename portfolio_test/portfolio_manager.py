@@ -14,12 +14,15 @@ class PortfolioManager:
     On initialization the portfolio is seeded with 100 SEK in CASH.
     """
 
-    def __init__(self, seed_date: str = "2020-01-01"):
+    def __init__(self, seed_date: str = "2020-01-01", fee_pct: float = 0.001, slippage_pct: float = 0.001):
         """Initialize empty DataFrames for trades and positions."""
+        self.fee_pct = fee_pct
+        self.slippage_pct = slippage_pct
+        
         # DataFrame to store all transactions (trade history)
         self.trades_df = pd.DataFrame(
-            columns=['transaction_datetime', 'transaction_type', 'ticker', 'shares', 'price', 'currency',
-                     'amount']
+            columns=['transaction_datetime', 'transaction_type', 'ticker', 'shares', 'price', 
+                     'executed_price', 'slippage_cost', 'fee_amount', 'currency', 'amount']
         )
         self.trades_df['transaction_datetime'] = pd.to_datetime(self.trades_df['transaction_datetime'])
 
@@ -40,6 +43,9 @@ class PortfolioManager:
         self._upsert_position('CASH', self.starting_cash, 1.0, seed_date)
         # Record initial portfolio snapshot
         self._record_portfolio_value(seed_date)
+        
+        # Track last interest date to avoid double-crediting if multiple trades occur on the same day
+        self.last_interest_date = None
 
     def _normalize_datetime(self, datetime_input: Union[str, datetime, pd.Timestamp, None]) -> str:
         """
@@ -113,8 +119,10 @@ class PortfolioManager:
         labels = list(data.index)
         if token in labels:
             return data[token]
+        elif ticker.upper() in labels:
+            return data[ticker.upper()]
         else:
-            raise ValueError(f"Price for ticker {ticker} not found in data. Expected column like '{token}'."
+            raise ValueError(f"Price for ticker {ticker} not found in data. Expected column like '{token}' or '{ticker.upper()}'."
                              f" Available columns: {labels}")
 
     def update_portfolio_prices(self, price_data_for_date: pd.Series):
@@ -156,9 +164,37 @@ class PortfolioManager:
                 except ValueError as e:
                     print(f"⚠️  Could not update price for {ticker} on {normalized_datetime}: {e}")
 
-        # After updating all relevant positions, record the new portfolio value
+        # Check for Overnight Cash Yield (Repo / Sweep)
+        if "Risk_Free_Rate" in price_data_for_date:
+            if self.last_interest_date != normalized_datetime:
+                annual_yield = price_data_for_date["Risk_Free_Rate"]
+                if pd.notna(annual_yield) and annual_yield > 0:
+                    current_cash = self.get_cash_balance()
+                    if current_cash > 0:
+                        # Convert annual percentage to daily decimal rate
+                        daily_rate = (annual_yield / 100) / 365
+                        interest_earned = current_cash * daily_rate
+                        
+                        self._upsert_position('CASH', interest_earned, 1.0, normalized_datetime)
+                        
+                        trade_record = pd.DataFrame([{
+                            'transaction_datetime': normalized_datetime,
+                            'transaction_type': 'INTEREST',
+                            'ticker': 'CASH',
+                            'shares': interest_earned,
+                            'price': 1.0,
+                            'executed_price': 1.0,
+                            'slippage_cost': 0.0,
+                            'fee_amount': 0.0,
+                            'currency': 'SEK',
+                            'amount': interest_earned
+                        }])
+                        self.trades_df = pd.concat([self.trades_df.dropna(axis=1, how='all'), trade_record], ignore_index=True)
+                
+                self.last_interest_date = normalized_datetime
+
+        # After updating all relevant positions and cash, record the new portfolio value
         self._record_portfolio_value(normalized_datetime)
-        print(f"✅ Portfolio value history updated for {normalized_datetime} based on new prices.")
 
     def record_transaction_percentage_buy_sell(self,
                                                tx_type: str,
@@ -186,7 +222,10 @@ class PortfolioManager:
             raise ValueError("data_one_date must have a valid index representing the date.")
         if tx_type == "BUY" and pcnt_of_portfolio > 0:
             # get current cash balance, see how many shares we can buy with the percentage of the portfolio value
-            shares = self.get_cash_balance() * pcnt_of_portfolio / stock_price
+            # Factor in slippage and fees to ensure we don't over-purchase
+            effective_price = stock_price * (1 + self.slippage_pct)
+            effective_price_with_fee = effective_price * (1 + self.fee_pct)
+            shares = self.get_cash_balance() * pcnt_of_portfolio / effective_price_with_fee
         elif tx_type == "SELL" and pcnt_of_portfolio > 0 and not (pcnt_of_portfolio > 1):
             # percentage of ticker position
             if ticker not in self.positions_df.index:
@@ -195,7 +234,9 @@ class PortfolioManager:
                 shares = self.positions_df.loc[ticker, 'net_shares'] * pcnt_of_portfolio
         elif tx_type == "SHORT" and pcnt_of_portfolio > 0:
             # Short using a percentage of portfolio equity as margin
-            shares = self.get_current_portfolio_value() * pcnt_of_portfolio / stock_price
+            effective_price = stock_price * (1 - self.slippage_pct)
+            effective_price_with_fee = effective_price * (1 + self.fee_pct)
+            shares = self.get_current_portfolio_value() * pcnt_of_portfolio / effective_price_with_fee
         elif tx_type == "COVER" and pcnt_of_portfolio > 0 and not (pcnt_of_portfolio > 1):
             if ticker not in self.positions_df.index:
                 shares = 0
@@ -264,14 +305,24 @@ class PortfolioManager:
         stock_price, currency = self._convert_price_and_currency_to_sek(stock_price, currency)
         tx_datetime = self._normalize_datetime(tx_datetime)
 
-        total_amount = shares * stock_price
+        if tx_type in ('BUY', 'COVER'):
+            executed_price = stock_price * (1 + self.slippage_pct)
+        elif tx_type in ('SELL', 'SHORT'):
+            executed_price = stock_price * (1 - self.slippage_pct)
+        else:
+            executed_price = stock_price
+
+        slippage_cost = abs(executed_price - stock_price) * shares
+        total_amount = shares * executed_price
+        fee_amount = total_amount * self.fee_pct
 
         try:
             # Validate sufficient liquidity for BUY or COVER
             if tx_type in ('BUY', 'COVER'):
                 current_cash = self.get_cash_balance()
-                if current_cash < total_amount:
-                    print(f"❌ Insufficient cash balance to {tx_type} {total_amount} of {ticker}. "
+                # Add 1e-6 tolerance for floating point precision issues
+                if current_cash + 1e-6 < (total_amount + fee_amount):
+                    print(f"❌ Insufficient cash balance to {tx_type} {total_amount + fee_amount} of {ticker}. "
                           f"Current CASH: {current_cash}")
                     return "Transaction Denied: Insufficient Cash"
 
@@ -308,6 +359,9 @@ class PortfolioManager:
                 'ticker': ticker,
                 'shares': shares,
                 'price': stock_price,
+                'executed_price': executed_price,
+                'slippage_cost': slippage_cost,
+                'fee_amount': fee_amount,
                 'currency': currency,
                 'amount': total_amount
             }])
@@ -320,15 +374,15 @@ class PortfolioManager:
 
             # --- 2. Upsert Stock Position ---
             stock_change = shares if tx_type in ('BUY', 'COVER') else -shares
-            self._upsert_position(ticker, stock_change, stock_price, tx_datetime)
+            self._upsert_position(ticker, stock_change, executed_price, tx_datetime)
 
             # --- 3. Update CASH Balance ---
             if ticker != 'CASH':
                 cash_change = 0.0
                 if tx_type in ('BUY', 'COVER'):
-                    cash_change = -total_amount
+                    cash_change = -total_amount - fee_amount
                 elif tx_type in ('SELL', 'SHORT'):
-                    cash_change = total_amount
+                    cash_change = total_amount - fee_amount
 
                 if cash_change != 0.0:
                     self._upsert_position('CASH', cash_change, 1.0, tx_datetime)
@@ -433,6 +487,9 @@ class PortfolioManager:
             'ticker': 'CASH',
             'shares': actual_amount,
             'price': 1.0,
+            'executed_price': 1.0,
+            'slippage_cost': 0.0,
+            'fee_amount': 0.0,
             'currency': 'SEK',
             'amount': actual_amount
         }])

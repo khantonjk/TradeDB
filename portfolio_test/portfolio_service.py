@@ -340,6 +340,12 @@ class PortfolioStatisticsService:
                     ax1.scatter(dt, pv.loc[dt, 'total_value'] / portfolio_vals.iloc[0] * 100,
                                 marker='v', color='red', s=100, label=label)
 
+        # Add background shading for when the portfolio is out of the market (in cash)
+        out_of_market = pv['stock_value'] < 0.01
+        if out_of_market.any():
+            ax1.fill_between(pv.index, 0, 1, where=out_of_market, color='yellow', alpha=0.15, 
+                             transform=ax1.get_xaxis_transform(), label='Out of Market (Cash)')
+
         ax1.set_title('Normalized Value (Base 100)')
         ax1.set_ylabel('Value')
         ax1.legend()
@@ -348,10 +354,19 @@ class PortfolioStatisticsService:
         ax2 = axes[1]
         drawdown_data = self.get_max_drawdown()['drawdown_series'].copy() * 100
         drawdown_data.index = pd.to_datetime(drawdown_data.index)
+        
         ax2.fill_between(drawdown_data.index, drawdown_data, 0, color='red', alpha=0.3)
-        ax2.plot(drawdown_data.index, drawdown_data, color='red', linewidth=1)
-        ax2.set_title('Portfolio Drawdown (%)')
+        ax2.plot(drawdown_data.index, drawdown_data, color='red', linewidth=1, label='Portfolio Drawdown')
+        
+        if self.benchmark_series is not None:
+            bench_dd = self.get_benchmark_max_drawdown()['drawdown_series'].copy() * 100
+            bench_dd.index = pd.to_datetime(bench_dd.index)
+            bench_dd = bench_dd.reindex(drawdown_data.index).ffill().bfill()
+            ax2.plot(bench_dd.index, bench_dd, color='gray', linestyle='--', linewidth=1.5, label='Benchmark Drawdown')
+
+        ax2.set_title('Drawdown Comparison (%)')
         ax2.set_ylabel('Drawdown %')
+        ax2.legend()
         ax2.grid(True, alpha=0.3)
 
         plt.tight_layout()
