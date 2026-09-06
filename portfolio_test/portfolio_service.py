@@ -1,6 +1,7 @@
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
+from scipy.stats import norm
 
 class PortfolioStatisticsService:
     def __init__(self, portfolio_manager, benchmark_series: pd.Series = None):
@@ -23,6 +24,7 @@ class PortfolioStatisticsService:
 
     def get_portfolio_returns(self) -> pd.Series:
         portfolio_values = self.portfolio_value_history['total_value'].copy()
+        portfolio_values.index = pd.to_datetime(portfolio_values.index).normalize()
         daily_returns = portfolio_values.pct_change().dropna()
         return daily_returns
 
@@ -127,6 +129,168 @@ class PortfolioStatisticsService:
             'drawdown_series': drawdown
         }
 
+    def get_var_cvar(self, confidence_level: float = 0.95) -> dict:
+        """
+        Calculates Value at Risk (VaR) and Conditional Value at Risk (CVaR) / Expected Shortfall.
+        Values are returned as positive decimal loss percentages (e.g., 0.02 = 2.0% loss).
+        """
+        returns = self.get_portfolio_returns()
+        if returns.empty:
+            return {
+                'var_historical': 0.0,
+                'cvar_historical': 0.0,
+                'var_parametric': 0.0,
+                'confidence_level': confidence_level
+            }
+
+        alpha = 1.0 - confidence_level
+        var_hist_raw = returns.quantile(alpha)
+        var_historical = max(0.0, -float(var_hist_raw))
+
+        tail_returns = returns[returns <= var_hist_raw]
+        if not tail_returns.empty:
+            cvar_historical = max(0.0, -float(tail_returns.mean()))
+        else:
+            cvar_historical = var_historical
+
+        mu = returns.mean()
+        sigma = returns.std()
+        z = norm.ppf(confidence_level)
+        var_parametric = max(0.0, -float(mu - z * sigma))
+
+        return {
+            'var_historical': var_historical,
+            'cvar_historical': cvar_historical,
+            'var_parametric': var_parametric,
+            'confidence_level': confidence_level
+        }
+
+    def get_sortino_ratio(self, risk_free_rate: float = 0.02) -> dict:
+        """
+        Calculates the Sortino ratio using downside deviation (semi-variance).
+        Penalizes only returns below the target risk-free rate.
+        """
+        returns = self.get_portfolio_returns()
+        if returns.empty:
+            return {'sortino_ratio': 0.0, 'downside_volatility': 0.0}
+
+        trading_days = 252
+        daily_rf = risk_free_rate / trading_days
+        annualized_return = returns.mean() * trading_days
+
+        downside_diff = returns - daily_rf
+        downside_diff = downside_diff.apply(lambda x: x if x < 0 else 0.0)
+        downside_volatility = float(np.sqrt((downside_diff ** 2).mean()) * np.sqrt(trading_days))
+
+        if downside_volatility == 0:
+            sortino = 0.0
+        else:
+            sortino = float((annualized_return - risk_free_rate) / downside_volatility)
+
+        return {
+            'sortino_ratio': sortino,
+            'downside_volatility': downside_volatility
+        }
+
+    def get_calmar_ratio(self) -> float:
+        """Calculates the Calmar ratio: Annualized Return / |Max Drawdown|."""
+        portfolio_stats = self.get_sharpe_ratio()
+        ann_return = portfolio_stats['annualized_return']
+        max_dd = abs(self.get_max_drawdown()['max_drawdown'])
+        if max_dd == 0:
+            return 0.0
+        return float(ann_return / max_dd)
+
+    def get_beta_alpha(self, risk_free_rate: float = 0.02) -> dict:
+        """
+        Calculates Market Beta (systematic risk), Jensen's Alpha (annualized excess return),
+        and Correlation relative to the benchmark.
+        """
+        if self.benchmark_series is None:
+            return {'beta': 0.0, 'alpha': 0.0, 'correlation': 0.0}
+
+        port_ret = self.get_portfolio_returns()
+        bench_ret = self.get_benchmark_returns()
+
+        aligned = pd.concat([port_ret.rename('port'), bench_ret.rename('bench')], axis=1).dropna()
+        if aligned.empty or aligned['bench'].var() == 0:
+            return {'beta': 0.0, 'alpha': 0.0, 'correlation': 0.0}
+
+        cov = aligned['port'].cov(aligned['bench'])
+        bench_var = aligned['bench'].var()
+        beta = float(cov / bench_var) if bench_var != 0 else 0.0
+        correlation = float(aligned['port'].corr(aligned['bench']))
+
+        trading_days = 252
+        port_ann_ret = aligned['port'].mean() * trading_days
+        bench_ann_ret = aligned['bench'].mean() * trading_days
+
+        # Jensen's Alpha: R_p - (R_f + Beta * (R_m - R_f))
+        alpha = float(port_ann_ret - (risk_free_rate + beta * (bench_ann_ret - risk_free_rate)))
+
+        return {
+            'beta': beta,
+            'alpha': alpha,
+            'correlation': correlation
+        }
+
+    def get_daily_rolling_metrics(self, window: int = 60, confidence_level: float = 0.95, risk_free_rate: float = 0.02) -> pd.DataFrame:
+        """
+        Returns a daily time-series DataFrame of quantitative risk metrics.
+        Can be queried per date just like daily PE or Close prices.
+        """
+        port_ret = self.get_portfolio_returns()
+        if port_ret.empty:
+            return pd.DataFrame()
+
+        trading_days = 252
+        min_p = max(5, window // 4)
+        alpha = 1.0 - confidence_level
+
+        df = pd.DataFrame(index=port_ret.index)
+        df['Daily_Return'] = port_ret
+
+        # Daily Rolling Volatility (annualized)
+        df['Rolling_Volatility'] = port_ret.rolling(window=window, min_periods=min_p).std() * np.sqrt(trading_days)
+
+        # Daily Rolling VaR (95% historical)
+        rolling_q = port_ret.rolling(window=window, min_periods=min_p).quantile(alpha)
+        df['Rolling_VaR_95'] = rolling_q.apply(lambda x: -x if x < 0 else 0.0)
+
+        # Daily Rolling CVaR (95% expected shortfall)
+        def _calc_cvar(s):
+            q = s.quantile(alpha)
+            tail = s[s <= q]
+            return -tail.mean() if not tail.empty else -q
+
+        df['Rolling_CVaR_95'] = port_ret.rolling(window=window, min_periods=min_p).apply(_calc_cvar, raw=False)
+
+        # Daily Rolling Sharpe Ratio
+        rolling_mean = port_ret.rolling(window=window, min_periods=min_p).mean() * trading_days
+        df['Rolling_Sharpe'] = (rolling_mean - risk_free_rate) / df['Rolling_Volatility'].replace(0, np.nan)
+
+        # Daily Rolling Drawdown from peak
+        pv = self.portfolio_value_history['total_value'].copy()
+        pv.index = pd.to_datetime(pv.index).normalize()
+        running_max = pv.expanding().max()
+        df['Drawdown'] = ((pv - running_max) / running_max).reindex(df.index)
+
+        # Benchmark-dependent rolling metrics
+        if self.benchmark_series is not None:
+            bench_ret = self.get_benchmark_returns()
+            aligned_bench = bench_ret.reindex(port_ret.index)
+            df['Benchmark_Daily_Return'] = aligned_bench
+
+            rolling_cov = port_ret.rolling(window=window, min_periods=min_p).cov(aligned_bench)
+            rolling_bench_var = aligned_bench.rolling(window=window, min_periods=min_p).var()
+            df['Rolling_Beta'] = rolling_cov / rolling_bench_var.replace(0, np.nan)
+            df['Rolling_Correlation'] = port_ret.rolling(window=window, min_periods=min_p).corr(aligned_bench)
+
+            rolling_bench_mean = aligned_bench.rolling(window=window, min_periods=min_p).mean() * trading_days
+            df['Rolling_Alpha'] = rolling_mean - (risk_free_rate + df['Rolling_Beta'] * (rolling_bench_mean - risk_free_rate))
+
+        return df
+
     def get_win_rate(self) -> dict:
         """
         Calculates the win rate of the portfolio based on completed trades.
@@ -186,6 +350,7 @@ class PortfolioStatisticsService:
         portfolio_drawdown = self.get_max_drawdown()
         benchmark_drawdown = self.get_benchmark_max_drawdown()
 
+        beta_alpha = self.get_beta_alpha()
         excess_return = portfolio_return - benchmark_return
 
         return {
@@ -198,6 +363,9 @@ class PortfolioStatisticsService:
             'portfolio_max_drawdown': portfolio_drawdown['max_drawdown'],
             'benchmark_max_drawdown': benchmark_drawdown['max_drawdown'],
             'drawdown_difference': portfolio_drawdown['max_drawdown'] - benchmark_drawdown['max_drawdown'],
+            'beta': beta_alpha['beta'],
+            'alpha': beta_alpha['alpha'],
+            'correlation': beta_alpha['correlation'],
         }
 
     def print_performance_summary(self):
@@ -212,6 +380,10 @@ class PortfolioStatisticsService:
         current_value = self.get_total_valuation()
         absolute_gain = current_value - starting_value
 
+        sortino_stats = self.get_sortino_ratio()
+        calmar = self.get_calmar_ratio()
+        var_cvar = self.get_var_cvar(confidence_level=0.95)
+
         print(f"\n📊 PORTFOLIO METRICS:")
         print(f"   ├─ Starting Capital:        {starting_value:>15,.2f} SEK")
         print(f"   ├─ Current Value:           {current_value:>15,.2f} SEK")
@@ -221,6 +393,14 @@ class PortfolioStatisticsService:
         print(f"   ├─ Annualized Volatility:   {portfolio_stats['annualized_volatility']*100:>14.2f}%")
         print(f"   ├─ Sharpe Ratio:            {portfolio_stats['sharpe_ratio']:>15.4f}")
         print(f"   └─ Max Drawdown:            {portfolio_drawdown['max_drawdown']*100:>14.2f}%")
+
+        print(f"\n🛡️ QUANTITATIVE RISK & TAIL-RISK METRICS:")
+        print(f"   ├─ Sortino Ratio:           {sortino_stats['sortino_ratio']:>15.4f}")
+        print(f"   ├─ Calmar Ratio:            {calmar:>15.4f}")
+        print(f"   ├─ Downside Volatility:     {sortino_stats['downside_volatility']*100:>14.2f}%")
+        print(f"   ├─ Historical VaR (95% Daily): {var_cvar['var_historical']*100:>11.2f}%")
+        print(f"   ├─ Parametric VaR (95% Daily): {var_cvar['var_parametric']*100:>11.2f}%")
+        print(f"   └─ Expected Shortfall (CVaR 95%): {var_cvar['cvar_historical']*100:>8.2f}%")
 
         win_rate_stats = self.get_win_rate()
         print(f"\n📈 TRADE STATISTICS:")
@@ -238,6 +418,9 @@ class PortfolioStatisticsService:
             print(f"   ├─ Portfolio Sharpe:        {comparison['portfolio_sharpe']:>15.4f}")
             print(f"   ├─ Benchmark Sharpe:        {comparison['benchmark_sharpe']:>15.4f}")
             print(f"   ├─ Sharpe Outperformance:   {comparison['sharpe_outperformance']:>15.4f}")
+            print(f"   ├─ Market Beta (β):         {comparison['beta']:>15.4f}")
+            print(f"   ├─ Jensen's Alpha (α):      {comparison['alpha']*100:>14.2f}%")
+            print(f"   ├─ Correlation (ρ):         {comparison['correlation']:>15.4f}")
             print(f"   ├─ Portfolio Max DD:        {comparison['portfolio_max_drawdown']*100:>14.2f}%")
             print(f"   └─ Benchmark Max DD:        {comparison['benchmark_max_drawdown']*100:>14.2f}%")
 
@@ -279,12 +462,19 @@ class PortfolioStatisticsService:
             portfolio_drawdown = 0
 
         win_rate_stats = self.get_win_rate()
+        sortino = self.get_sortino_ratio()
+        calmar = self.get_calmar_ratio()
+        var_cvar = self.get_var_cvar()
 
         summary = {
             'Total Return': portfolio_return,
             'Annualized Return': annualized_return,
             'Volatility': annualized_volatility,
             'Sharpe Ratio': sharpe_ratio,
+            'Sortino Ratio': sortino['sortino_ratio'],
+            'Calmar Ratio': calmar,
+            'Historical VaR 95': var_cvar['var_historical'],
+            'CVaR 95': var_cvar['cvar_historical'],
             'Max Drawdown': portfolio_drawdown,
             'Total Trades': win_rate_stats['total_trades'],
             'Win Rate': win_rate_stats['win_rate']
@@ -295,6 +485,9 @@ class PortfolioStatisticsService:
                 comp = self.compare_to_benchmark()
                 summary['Excess Return'] = comp['excess_return']
                 summary['Benchmark Sharpe'] = comp['benchmark_sharpe']
+                summary['Beta'] = comp['beta']
+                summary['Alpha'] = comp['alpha']
+                summary['Correlation'] = comp['correlation']
             except Exception:
                 pass
                 

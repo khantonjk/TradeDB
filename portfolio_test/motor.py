@@ -1,4 +1,5 @@
 import pandas as pd
+import numpy as np
 import yfinance as yf
 
 from portfolio_test.FX_CONSTANTS import currency_conversion_rates
@@ -81,3 +82,90 @@ class CalculationMotor(yf.Ticker):
         pe_ratio.name = f"PE_Ratio ({self.ticker})"
         
         return pe_ratio
+
+    def get_daily_returns(self) -> pd.Series:
+        """Returns the daily percentage return Series of Adj Close."""
+        returns = self.df['Adj Close'].pct_change().dropna()
+        returns.name = f"Returns ({self.ticker})"
+        return returns
+
+    def get_daily_rolling_volatility(self, window: int = 60, annualized: bool = True) -> pd.Series:
+        """
+        Calculates rolling volatility over a specified window.
+        If annualized=True, scales by sqrt(252).
+        """
+        returns = self.get_daily_returns()
+        min_p = max(5, window // 4)
+        vol = returns.rolling(window=window, min_periods=min_p).std()
+        if annualized:
+            vol = vol * np.sqrt(252)
+        vol.name = f"Rolling_Vol_{window}d ({self.ticker})"
+        return vol
+
+    def get_daily_rolling_var(self, window: int = 60, confidence_level: float = 0.95) -> pd.Series:
+        """
+        Calculates daily historical Value at Risk (VaR) over a rolling window.
+        Returned as a positive percentage loss (e.g. 0.02 = 2% max expected loss at 95% confidence).
+        """
+        returns = self.get_daily_returns()
+        min_p = max(5, window // 4)
+        alpha = 1.0 - confidence_level
+        rolling_q = returns.rolling(window=window, min_periods=min_p).quantile(alpha)
+        var_series = rolling_q.apply(lambda x: -x if x < 0 else 0.0)
+        var_series.name = f"Rolling_VaR_{int(confidence_level*100)}_{window}d ({self.ticker})"
+        return var_series
+
+    def get_daily_rolling_cvar(self, window: int = 60, confidence_level: float = 0.95) -> pd.Series:
+        """
+        Calculates daily Conditional Value at Risk (CVaR) / Expected Shortfall over a rolling window.
+        Measures the average loss during the worst (1 - confidence_level) tail days.
+        """
+        returns = self.get_daily_returns()
+        min_p = max(5, window // 4)
+        alpha = 1.0 - confidence_level
+
+        def _calc_cvar(s):
+            q = s.quantile(alpha)
+            tail = s[s <= q]
+            return -tail.mean() if not tail.empty else -q
+
+        cvar_series = returns.rolling(window=window, min_periods=min_p).apply(_calc_cvar, raw=False)
+        cvar_series.name = f"Rolling_CVaR_{int(confidence_level*100)}_{window}d ({self.ticker})"
+        return cvar_series
+
+    def get_daily_rolling_beta(self, benchmark_series: pd.Series, window: int = 60) -> pd.Series:
+        """
+        Calculates daily rolling Beta relative to a benchmark series over a rolling window.
+        """
+        asset_returns = self.get_daily_returns()
+        bench_returns = benchmark_series.pct_change().dropna()
+        
+        # Normalize indices
+        bench_returns.index = pd.to_datetime(bench_returns.index).normalize()
+        asset_returns.index = pd.to_datetime(asset_returns.index).normalize()
+        
+        aligned_bench = bench_returns.reindex(asset_returns.index)
+        min_p = max(5, window // 4)
+        
+        rolling_cov = asset_returns.rolling(window=window, min_periods=min_p).cov(aligned_bench)
+        rolling_bench_var = aligned_bench.rolling(window=window, min_periods=min_p).var()
+        
+        beta_series = rolling_cov / rolling_bench_var.replace(0, np.nan)
+        beta_series.name = f"Rolling_Beta_{window}d ({self.ticker})"
+        return beta_series
+
+    def get_daily_rolling_risk_metrics(self, benchmark_series: pd.Series = None, window: int = 60, confidence_level: float = 0.95) -> pd.DataFrame:
+        """
+        Returns a DataFrame containing all daily rolling risk metrics for the asset.
+        """
+        df = pd.DataFrame(index=self.df.index)
+        df[f"Adj_Close ({self.ticker})"] = self.df['Adj Close']
+        df[f"Returns ({self.ticker})"] = self.get_daily_returns()
+        df[f"Rolling_Vol_{window}d ({self.ticker})"] = self.get_daily_rolling_volatility(window=window)
+        df[f"Rolling_VaR_{int(confidence_level*100)}_{window}d ({self.ticker})"] = self.get_daily_rolling_var(window=window, confidence_level=confidence_level)
+        df[f"Rolling_CVaR_{int(confidence_level*100)}_{window}d ({self.ticker})"] = self.get_daily_rolling_cvar(window=window, confidence_level=confidence_level)
+
+        if benchmark_series is not None:
+            df[f"Rolling_Beta_{window}d ({self.ticker})"] = self.get_daily_rolling_beta(benchmark_series, window=window)
+
+        return df
